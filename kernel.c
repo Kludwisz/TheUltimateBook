@@ -175,7 +175,7 @@ void flip_bit(uint64_t *mask_lo, uint64_t *mask_hi, int state_bit_index) {
     }
 }
 
-int is_param_set(Equation* eqn, int param_idx) {
+int is_param_set(const Equation* eqn, int param_idx) {
     uint64_t mask = eqn->lhs[param_idx / 64];
     int shift = (63 - (param_idx % 64));
     if (mask & (1ULL << shift)) {
@@ -184,9 +184,9 @@ int is_param_set(Equation* eqn, int param_idx) {
     return 0;
 }
 
-void fill_mask_group(uint64_t *mask_group, uint64_t *per_param_masks, int param_idx_min_incl, int param_idx_max_incl) {
+void fill_mask_group(uint64_t mask_group[], uint64_t per_param_masks[], int param_idx_min_incl, int param_idx_max_incl) {
     uint32_t num_params = param_idx_max_incl - param_idx_min_incl + 1;
-    uint32_t max_val = 1u << (num_params - 1);
+    uint32_t max_val = 1u << num_params;
 
     for (uint32_t p = 0; p < max_val; p++) {
         uint32_t pvals = p;
@@ -200,7 +200,8 @@ void fill_mask_group(uint64_t *mask_group, uint64_t *per_param_masks, int param_
             }
         }
 
-        // TODO save the mask!
+        mask_group[p * 2] = combined_lo;
+        mask_group[p * 2 + 1] = combined_hi; 
     }
 }
 
@@ -231,17 +232,14 @@ void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
     // now we can combine the per-param masks and calculate "aggregated"
     // flip masks for the parameter combinations defined in GroupMaskSet.
 
-    // TODO
     for (int block_group_idx = 0; block_group_idx < 5; block_group_idx++) {
-
+        fill_mask_group(gms->MASK_BLOCK[block_group_idx], per_param_masks, 0 + 2*block_group_idx, 1 + 2*block_group_idx);
     }
+
+    fill_mask_group(gms->MASK_ITER, per_param_masks, 10, 15);
 
     for (int thread_group_idx = 0; thread_group_idx < 2; thread_group_idx++) {
-
-    }
-
-    for (int iter_idx = 0; iter_idx < 64; iter_idx++) {
-        int mask = iter_idx;
+        fill_mask_group(gms->MASK_THREAD[thread_group_idx], per_param_masks, 16 + 4*thread_group_idx, 19 + 4*thread_group_idx);
     }
 }
 
@@ -257,37 +255,62 @@ void printXoro(const Xoroshiro* state)
     printf("Current Xoroshiro state:   ( %llu, %llu )\n", state->lo, state->hi);
 }
 
+void test_state(Xoroshiro state, int num_calls, int jump) {
+    printXoro(&state);
+    for (int i = 0; i < jump; i++) {
+        xNextLong(&state);
+    }
+    for (int i = 0; i < num_calls; i++) {
+        printf("nextInt(50) = %d\n", xNextInt(&state, 50));
+        xNextLong(&state);
+    }
+}
+
 int test_solver() {
-    Solution* sol = generate_starting_solution(8, 5*2, 2 + 3);
+    int num_calls = 8;
+    int jump = 2 * 5;
+    Solution* sol = generate_starting_solution(num_calls, jump, 123456789);
 
     Xoroshiro states[8];
     getAllXoroshiroStates(sol, states, 8);
 
     Xoroshiro s = {states[1].lo, states[1].hi};
-    printXoro(&s);
-    for (int i = 0; i < 10; i++)
-        xNextLong(&s);
-    for (int i = 0; i < 8; i++) {
-        //testNextInt(&s, 50);
-        //printf("xNextLong() = %08x\n", (unsigned int)(xNextLong(&s) & (0xFFFFFFFFu)));
-        printf("nextInt(50) = %d\n", xNextInt(&s, 50));
-        xNextLong(&s);
-    }
+    test_state(s, num_calls, jump);
     
     free(sol);
     return 0;
 }
 
 int test_group_masks() {
-    Solution* sol = generate_starting_solution(8, 5*2, 2 + 3);
+    int num_calls = 8;
+    int jump = 2 * 5;
+
+    Solution* sol = generate_starting_solution(num_calls, jump, 123456789);
     Xoroshiro startState;
     getAllXoroshiroStates(sol, &startState, 1);
 
+    DEBUG("starting mask gen\n");
     GroupMaskSet gms;
     generate_masks_for_solution(sol, &gms);
     free(sol);
+    DEBUG("mask gen done\n");
 
-    // TODO check if it's possible to use the group masks
+    // check if it's possible to use the group masks
+    test_state(startState, num_calls, jump);
+
+    startState.lo ^= gms.MASK_BLOCK[3][7*2];
+    startState.hi ^= gms.MASK_BLOCK[3][7*2 + 1];
+    test_state(startState, num_calls, jump);
+
+    startState.lo ^= gms.MASK_ITER[31*2];
+    startState.hi ^= gms.MASK_ITER[31*2 + 1];
+    test_state(startState, num_calls, jump);
+
+    startState.lo ^= gms.MASK_THREAD[1][2];
+    startState.hi ^= gms.MASK_THREAD[1][2 + 1];
+    test_state(startState, num_calls, jump);
+
+    return 0;
 }
 
 int main() {
