@@ -184,6 +184,26 @@ int is_param_set(Equation* eqn, int param_idx) {
     return 0;
 }
 
+void fill_mask_group(uint64_t *mask_group, uint64_t *per_param_masks, int param_idx_min_incl, int param_idx_max_incl) {
+    uint32_t num_params = param_idx_max_incl - param_idx_min_incl + 1;
+    uint32_t max_val = 1u << (num_params - 1);
+
+    for (uint32_t p = 0; p < max_val; p++) {
+        uint32_t pvals = p;
+        uint64_t combined_lo = 0, combined_hi = 0;
+        for (int idx = param_idx_min_incl; idx <= param_idx_max_incl; idx++) {
+            uint32_t val = pvals & 1;
+            pvals >>= 1;
+            if (val) {
+                combined_lo ^= per_param_masks[idx * 2];
+                combined_hi ^= per_param_masks[idx * 2 + 1];
+            }
+        }
+
+        // TODO save the mask!
+    }
+}
+
 void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
     uint64_t per_param_masks[24 * 2];
     
@@ -197,7 +217,7 @@ void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
 
         // for each equation where the parameter bit is set, flip the 
         // dependent variable determined by that equation in the state mask
-        for (int eID = 0; eID < sol->numEquations; eID++) {
+        for (int eID = 0; eID < sol->equationCount; eID++) {
             if (is_param_set(&(sol->equations[eID]), bit_idx)) {
                 flip_bit(&mask_lo, &mask_hi, stateBitIndexOf(sol->dependentVar[eID]));
             }
@@ -212,6 +232,17 @@ void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
     // flip masks for the parameter combinations defined in GroupMaskSet.
 
     // TODO
+    for (int block_group_idx = 0; block_group_idx < 5; block_group_idx++) {
+
+    }
+
+    for (int thread_group_idx = 0; thread_group_idx < 2; thread_group_idx++) {
+
+    }
+
+    for (int iter_idx = 0; iter_idx < 64; iter_idx++) {
+        int mask = iter_idx;
+    }
 }
 
 // ---------------------------------------
@@ -250,7 +281,7 @@ int test_solver() {
 int test_group_masks() {
     Solution* sol = generate_starting_solution(8, 5*2, 2 + 3);
     Xoroshiro startState;
-    getAllXoroshiroStates(sol, &state, 1);
+    getAllXoroshiroStates(sol, &startState, 1);
 
     GroupMaskSet gms;
     generate_masks_for_solution(sol, &gms);
