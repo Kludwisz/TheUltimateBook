@@ -43,6 +43,7 @@ conditions in the enchantWithLevels pipeline. Matching states are saved as outpu
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <unordered_set>
 
 #include "cuda_utils.cuh"
 #include "xoro_matrix.h"
@@ -94,9 +95,13 @@ __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
         state.hi ^= ITER_MASKS[iterIndex*2 + 1];
 
         if (xNextIntFast(&state, 50) != 0) continue; // 7
+        xNextLong(&state); // skip 1
         if (xNextIntFast(&state, 50) != 0) continue; // 8
+        xNextLong(&state); // skip 1
         if (xNextIntFast(&state, 50) != 0) continue; // 9
+        xNextLong(&state); // skip 1
         if (xNextIntFast(&state, 50) != 0) continue; // 10
+        xNextLong(&state); // skip 1
         if (xNextIntFast(&state, 50) != 0) continue; // 11
 
         {   // got a partial result
@@ -357,8 +362,9 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "Running search, seed=%" PRIu64 ", runs=%" PRIu32 "\n", start_eqn_seed, num_runs);
 
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now(), t1;
-
     std::uint64_t eqn_seed = start_eqn_seed;
+    std::unordered_set<Xoroshiro, XoroshiroHash> solutions;
+
     for (int r = 0; r < num_runs; r++) {
         run(eqn_seed);
 
@@ -372,8 +378,17 @@ int main(int argc, char **argv) {
         }
 
         for (std::uint32_t i = 0; i < result_count; i++) {
-            std::fprintf(stdout, "%" PRIu64 " %" PRIu64 "\n", results[i].lo, results[i].hi);
+            if (solutions.find(results[i]) == solutions.end()) {
+                std::fprintf(stdout, "%" PRIu64 " %" PRIu64 "\n", results[i].lo, results[i].hi);
+                solutions.insert(results[i]);
+
+                Xoroshiro xr = results[i];
+                for (int i = 0; i < 13; i++) { 
+                    std::fprintf(stderr, "nextInt(50) = %d\n", xNextInt(&xr, 50));
+                    xNextLong(&xr);
+                }
+            }
         }
-        eqn_seed += 271;
+        eqn_seed += 1;
     }
 }

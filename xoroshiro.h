@@ -1,5 +1,6 @@
 #pragma once
 #include "inttypes.h"
+#include <functional>
 
 #ifndef __CUDACC__
 #define __host__
@@ -12,10 +13,20 @@
 /// https://github.com/Cubitect/cubiomes/blob/master/rng.h
 ///=============================================================================
 
-typedef struct Xoroshiro Xoroshiro;
-struct Xoroshiro
-{
+struct Xoroshiro {
     uint64_t lo, hi;
+
+    bool operator==(const Xoroshiro& other) const noexcept {
+        return lo == other.lo && hi == other.hi;
+    }
+};
+
+struct XoroshiroHash {
+    std::size_t operator()(const Xoroshiro& x) const noexcept {
+        std::size_t h1 = std::hash<uint64_t>{}(x.lo);
+        std::size_t h2 = std::hash<uint64_t>{}(x.hi);
+        return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+    }
 };
 
 __host__ __device__ static inline uint64_t rotl64(uint64_t x, uint8_t b)
