@@ -88,6 +88,7 @@ __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
     // handled using fully precomputed mask values stored in __constant__ memory. 
 
     for (int iterIndex = 0; iterIndex < 64; iterIndex++) {
+        //printf("thread %d: %llu\n", threadIdx.x, ITER_MASKS[iterIndex*2]);
         Xoroshiro state = initialState;
         state.lo ^= ITER_MASKS[iterIndex*2];
         state.hi ^= ITER_MASKS[iterIndex*2 + 1];
@@ -121,7 +122,7 @@ __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
 // Equation set generator - uses the provided seed to determine the positioning
 // of the set bits in the addition columns.
 
-extern "C" Equation get_state_bit_equation(int stateJump, int statePart, int bitIndex, int bitValue) {
+Equation get_state_bit_equation(int stateJump, int statePart, int bitIndex, int bitValue) {
     FXTMatrix fxtm = { 0 }, fxtmTransposed = { 0 };
     fastXoroMatrixPower(&XOROSHIRO_STANDARD_FXTM, stateJump, &fxtm);
     transposeFXTM(&fxtm, &fxtmTransposed);
@@ -138,7 +139,7 @@ extern "C" Equation get_state_bit_equation(int stateJump, int statePart, int bit
     return eqn;
 }
 
-extern "C" Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t equation_seed) {
+Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t equation_seed) {
     int eq_count = num_calls * 13;
     Equation* eqns = static_cast<Equation*>(malloc(eq_count * sizeof(Equation)));
     if (eqns == NULL) return NULL;
@@ -259,7 +260,7 @@ void fill_mask_group(uint64_t mask_group[], uint64_t per_param_masks[], int para
     }
 }
 
-extern "C" void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
+void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
     uint64_t per_param_masks[24 * 2];
     
     // firstly, calculate masks for individual parameters
@@ -307,7 +308,7 @@ void setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
     free(sol);
 
     // Copy data to device and constant mem
-    cudaMemcpyToSymbol(ITER_MASKS, gms.MASK_ITER, 128 * sizeof(uint64_t));
+    CUDA_CHECK(cudaMemcpyToSymbol(ITER_MASKS, gms.MASK_ITER, 128 * sizeof(uint64_t)));
 
     uint64_t BLOCK_MASKS_h[N_BLOCK_MASKS];
     uint64_t THREAD_MASKS_h[N_THREAD_MASKS];
@@ -321,8 +322,8 @@ void setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
             THREAD_MASKS_h[i*32 + j] = gms.MASK_THREAD[i][j];
         }
     }
-    cudaMemcpy(BLOCK_MASKS, BLOCK_MASKS_h, N_BLOCK_MASKS * sizeof(uint64_t), cudaMemcpyHostToDevice);
-    cudaMemcpy(THREAD_MASKS, THREAD_MASKS_h, N_THREAD_MASKS * sizeof(uint64_t), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpyToSymbol(BLOCK_MASKS, BLOCK_MASKS_h, N_BLOCK_MASKS * sizeof(uint64_t)));
+    CUDA_CHECK(cudaMemcpyToSymbol(THREAD_MASKS, THREAD_MASKS_h, N_THREAD_MASKS * sizeof(uint64_t)));
 }
 
 void run(std::uint64_t eqn_seed) {
@@ -330,7 +331,7 @@ void run(std::uint64_t eqn_seed) {
     setup_search(eqn_seed, &initialState);
     
     result_count = 0;
-    gaussianElimIterKernel <<< 1024, 256 >>> (initialState);
+    gaussianElimIterKernel <<< 4, 4 >>> (initialState);
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
@@ -355,11 +356,20 @@ int main(int argc, char **argv) {
 
     std::fprintf(stderr, "Running search, seed=%" PRIu64 ", runs=%" PRIu32 "\n", start_eqn_seed, num_runs);
 
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now(), t1;
+
     std::uint64_t eqn_seed = start_eqn_seed;
     for (int r = 0; r < num_runs; r++) {
-        auto t0 = std::chrono::steady_clock::now();
         run(eqn_seed);
-        auto t1 = std::chrono::steady_clock::now();
+
+        if (r % 10 == 0) {
+            t0 = std::chrono::steady_clock::now();
+        }
+        if (r % 10 == 9) {
+            t1 = std::chrono::steady_clock::now();
+            const auto int_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
+            std::fprintf(stderr, "run %d/%d:  %d ms\n", r+1, num_runs, int_ms);
+        }
 
         for (std::uint32_t i = 0; i < result_count; i++) {
             std::fprintf(stdout, "%" PRIu64 " %" PRIu64 "\n", results[i].lo, results[i].hi);

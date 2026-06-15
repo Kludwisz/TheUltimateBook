@@ -3,7 +3,7 @@
 #include "xoroshiro.h"
 #include "xoro_matrix.h"
 #include "utils.h"
-const bool DEBUG_MODE = true;
+const bool DEBUG_MODE = false;
 
 #include "time.h"
 

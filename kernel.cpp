@@ -3,7 +3,7 @@
 #include "utils.h"
 #include <stdlib.h>
 #include <stdio.h>
-static const bool DEBUG_MODE = true;
+static const bool DEBUG_MODE = false;
 
 /*
 We're targetting the following sequence of nextInt calls:
