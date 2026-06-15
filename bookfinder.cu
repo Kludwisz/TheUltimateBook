@@ -38,21 +38,13 @@ Finaly, the forward filter takes all candidate states found so far and checks th
 conditions in the enchantWithLevels pipeline. Matching states are saved as output.
 */
 
-#ifndef USE_CUDA
-#define __constant__
-#define __managed__
-#define __shared__
-#define __host__
-#define __device__
-#define __global__
-#endif
-
 #include <chrono>
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
 
+#include "cuda_utils.cuh"
 #include "xoro_matrix.h"
 #include "state_solver.h"
 
@@ -308,24 +300,40 @@ void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
 }
 
 
-void setup_search(std::uint64_t eqn_seed) {
+void setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
     // Generate masks & initial state
     Solution *sol = generate_starting_solution(8, 5*2, eqn_seed);
-    Xoroshiro initialState; 
-    getAllXoroshiroStates(sol, &initialState, 1);
+    getAllXoroshiroStates(sol, initialState, 1);
     GroupMaskSet gms;
     generate_masks_for_solution(sol, &gms);
     free(sol);
 
     // Copy data to device and constant mem
-    // TODO
+    cudaMemcpyToSymbol(ITER_MASKS, gms.MASK_ITER, 128 * sizeof(uint64_t));
+
+    uint64_t BLOCK_MASKS_h[N_BLOCK_MASKS];
+    uint64_t THREAD_MASKS_h[N_THREAD_MASKS];
+    for (int i = 0; i < 5; i++) {
+        for (int j = 0; j < 8; j++) {
+            BLOCK_MASKS_h[i*8 + j] = gms.MASK_BLOCK[i][j];
+        }
+    }
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 32; j++) {
+            THREAD_MASKS_h[i*32 + j] = gms.MASK_THREAD[i][j];
+        }
+    }
+    cudaMemcpy(BLOCK_MASKS, BLOCK_MASKS_h, N_BLOCK_MASKS * sizeof(uint64_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(THREAD_MASKS, THREAD_MASKS_h, N_THREAD_MASKS * sizeof(uint64_t), cudaMemcpyHostToDevice);
 }
 
 void run(std::uint64_t eqn_seed) {
-    setup_search(eqn_seed);
-
+    Xoroshiro initialState;
+    setup_search(eqn_seed, &initialState);
+    
     result_count = 0;
-    // TODO run the kernel, synchronize.
+    gaussianElimIterKernel <<< 1024, 256 >>> (initialState);
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 int main(int argc, char **argv) {
