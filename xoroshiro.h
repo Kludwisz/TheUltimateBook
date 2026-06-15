@@ -1,6 +1,11 @@
 #pragma once
 #include "inttypes.h"
 
+#ifndef __CUDACC__
+#define __host__
+#define __device__
+#endif
+
 ///=============================================================================
 ///                             Xoroshiro 128++
 /// from the Cubiomes library by Cubitect, see:
@@ -13,12 +18,12 @@ struct Xoroshiro
     uint64_t lo, hi;
 };
 
-static inline uint64_t rotl64(uint64_t x, uint8_t b)
+__host__ __device__ static inline uint64_t rotl64(uint64_t x, uint8_t b)
 {
     return (x << b) | (x >> (64-b));
 }
 
-static inline void xSetSeed(Xoroshiro *xr, uint64_t value)
+__host__ __device__ static inline void xSetSeed(Xoroshiro *xr, uint64_t value)
 {
     const uint64_t XL = 0x9e3779b97f4a7c15ULL;
     const uint64_t XH = 0x6a09e667f3bcc909ULL;
@@ -36,7 +41,7 @@ static inline void xSetSeed(Xoroshiro *xr, uint64_t value)
     xr->hi = h;
 }
 
-static inline uint64_t xNextLong(Xoroshiro *xr)
+__host__ __device__ static inline uint64_t xNextLong(Xoroshiro *xr)
 {
     uint64_t l = xr->lo;
     uint64_t h = xr->hi;
@@ -47,7 +52,7 @@ static inline uint64_t xNextLong(Xoroshiro *xr)
     return n;
 }
 
-static inline int xNextInt(Xoroshiro *xr, uint32_t n)
+__host__ __device__ static inline int xNextInt(Xoroshiro *xr, uint32_t n)
 {
     uint64_t r = (xNextLong(xr) & 0xFFFFFFFF) * n;
     if ((uint32_t)r < n)
@@ -60,36 +65,36 @@ static inline int xNextInt(Xoroshiro *xr, uint32_t n)
     return r >> 32;
 }
 
-static inline int xNextIntFast(Xoroshiro *xr, uint32_t n)
+__host__ __device__ static inline int xNextIntFast(Xoroshiro *xr, uint32_t n)
 {
     uint64_t r = (xNextLong(xr) & 0xFFFFFFFF) * n;
     return r >> 32;
 }
 
-static inline double xNextDouble(Xoroshiro *xr)
+__host__ __device__ static inline double xNextDouble(Xoroshiro *xr)
 {
     return (xNextLong(xr) >> (64-53)) * 1.1102230246251565E-16;
 }
 
-static inline float xNextFloat(Xoroshiro *xr)
+__host__ __device__ static inline float xNextFloat(Xoroshiro *xr)
 {
     return (xNextLong(xr) >> (64-24)) * 5.9604645E-8F;
 }
 
-static inline void xSkipN(Xoroshiro *xr, int count)
+__host__ __device__ static inline void xSkipN(Xoroshiro *xr, int count)
 {
     while (count --> 0)
         xNextLong(xr);
 }
 
-static inline uint64_t xNextLongJ(Xoroshiro *xr)
+__host__ __device__ static inline uint64_t xNextLongJ(Xoroshiro *xr)
 {
     int32_t a = xNextLong(xr) >> 32;
     int32_t b = xNextLong(xr) >> 32;
     return ((uint64_t)a << 32) + b;
 }
 
-static inline int xNextIntJ(Xoroshiro *xr, uint32_t n)
+__host__ __device__ static inline int xNextIntJ(Xoroshiro *xr, uint32_t n)
 {
     int bits, val;
     const int m = n - 1;

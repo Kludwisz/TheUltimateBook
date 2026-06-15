@@ -60,7 +60,7 @@ void initParamsFromFile(ParameterSet *obj, const char *filename)
 
 int solveForStartingState(const ParameterSet *paramSet, Solution *sol)
 {
-    Equation* eqns = malloc(paramSet->paramCount * sizeof(Equation));
+    Equation* eqns = static_cast<Equation *>(malloc(paramSet->paramCount * sizeof(Equation)));
 
     // create all the equations
     FXTMatrix fxtm = { 0 }, fxtmTransposed = { 0 };
@@ -194,7 +194,7 @@ ParameterSet* genRandomParamSet(uint64_t seed, const Xoroshiro state)
 int testSolverCorrectness(uint64_t seed)
 {
     srand((int)seed);
-    const Xoroshiro state = { rand() * rand() + 1, rand() * rand() + 1 };
+    const Xoroshiro state = { rand() * rand() + 1ULL, rand() * rand() + 1ULL };
     ParameterSet* ps = genRandomParamSet(seed, state);
 
     Solution sol;

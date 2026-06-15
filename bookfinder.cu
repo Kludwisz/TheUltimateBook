@@ -68,7 +68,7 @@ __managed__ uint32_t result_count = 0;
 // the kernel
 __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
     // per-thread computations
-    std::uint32_t tid; // = threadIdx.x;
+    std::uint32_t tid = threadIdx.x;
     initialState.lo ^= THREAD_MASKS[(tid & 0b1111) * 2];
     initialState.hi ^= THREAD_MASKS[(tid & 0b1111) * 2 + 1];
     tid >>= 4;
@@ -76,7 +76,7 @@ __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
     initialState.hi ^= THREAD_MASKS[32 + (tid & 0b1111) * 2 + 1];
 
     // per-block computations
-    std::uint32_t bid; // = blockIdx.x;
+    std::uint32_t bid = blockIdx.x;
     #pragma unroll
     for (int i = 0; i < 5; i++) {
         initialState.lo ^= BLOCK_MASKS[i*8 + (bid & 0b11) * 2];
@@ -98,12 +98,12 @@ __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
         if (xNextIntFast(&state, 50) != 0) continue; // 10
         if (xNextIntFast(&state, 50) != 0) continue; // 11
 
-        {// got a partial result
+        {   // got a partial result
             Xoroshiro out = initialState;
             out.lo ^= ITER_MASKS[iterIndex*2];
             out.hi ^= ITER_MASKS[iterIndex*2 + 1];
 
-            int idx;// = atomicAdd(&result_count, 1);
+            int idx = atomicAdd(&result_count, 1);
             results[idx] = out;
         }
     }
@@ -121,7 +121,7 @@ __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
 // Equation set generator - uses the provided seed to determine the positioning
 // of the set bits in the addition columns.
 
-Equation get_state_bit_equation(int stateJump, int statePart, int bitIndex, int bitValue) {
+extern "C" Equation get_state_bit_equation(int stateJump, int statePart, int bitIndex, int bitValue) {
     FXTMatrix fxtm = { 0 }, fxtmTransposed = { 0 };
     fastXoroMatrixPower(&XOROSHIRO_STANDARD_FXTM, stateJump, &fxtm);
     transposeFXTM(&fxtm, &fxtmTransposed);
@@ -138,12 +138,10 @@ Equation get_state_bit_equation(int stateJump, int statePart, int bitIndex, int 
     return eqn;
 }
 
-Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t equation_seed) {
+extern "C" Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t equation_seed) {
     int eq_count = num_calls * 13;
     Equation* eqns = static_cast<Equation*>(malloc(eq_count * sizeof(Equation)));
     if (eqns == NULL) return NULL;
-
-    FXTMatrix fxtm = { 0 }, fxtmTransposed = { 0 };
 
     int permutation[50] = {0};
     for (int i = 0; equation_seed > 0; i++) {
@@ -261,7 +259,7 @@ void fill_mask_group(uint64_t mask_group[], uint64_t per_param_masks[], int para
     }
 }
 
-void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
+extern "C" void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
     uint64_t per_param_masks[24 * 2];
     
     // firstly, calculate masks for individual parameters
@@ -355,7 +353,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    std::fprintf(stderr, "Running search, seed=%" PRIu64 ", runs=%" PRIu32 "\n");
+    std::fprintf(stderr, "Running search, seed=%" PRIu64 ", runs=%" PRIu32 "\n", start_eqn_seed, num_runs);
 
     std::uint64_t eqn_seed = start_eqn_seed;
     for (int r = 0; r < num_runs; r++) {

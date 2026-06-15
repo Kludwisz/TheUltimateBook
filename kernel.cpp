@@ -72,7 +72,7 @@ Equation get_state_bit_equation(int stateJump, int statePart, int bitIndex, int 
 
 Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t equation_seed) {
     int eq_count = num_calls * 13;
-    Equation* eqns = malloc(eq_count * sizeof(Equation));
+    Equation* eqns = static_cast<Equation *>(malloc(eq_count * sizeof(Equation)));
     if (eqns == NULL) return NULL;
 
     FXTMatrix fxtm = { 0 }, fxtmTransposed = { 0 };

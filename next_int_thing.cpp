@@ -1,7 +1,7 @@
 #include "state_solver.h"
 #include "xoro_matrix.h"
-#include <stdlib.h>
-#include <stdio.h>
+#include <cstdlib>
+#include <cstdio>
 
 #define XORO_HIGH (1)
 #define XORO_LOW (0)
@@ -24,7 +24,7 @@ Equation get_state_bit_equation(int stateJump, int statePart, int bitIndex, int 
 void solve_for_consecutive_nextInt_bits(int num_calls, Solution *out) {
     int eq_count = num_calls * 14;
     
-    Equation* eqns = malloc(eq_count * sizeof(Equation));
+    Equation* eqns = static_cast<Equation *>(malloc(eq_count * sizeof(Equation)));
     if (eqns == NULL) return;
 
     FXTMatrix fxtm = { 0 }, fxtmTransposed = { 0 };

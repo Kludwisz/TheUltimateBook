@@ -39,6 +39,17 @@ void transposeFXTM(const FXTMatrix* matrix, FXTMatrix* transposed)
 
 // -----------------------------------------------------------
 
+#ifdef __GNUC__
+int getParity(uint64_t val) {
+    const int newBit = __builtin_parityll(mulXor); // aka: GCC, do your thing!
+}
+#else
+#include <intrin.h>
+int getParity(uint64_t val) {
+    return __popcnt64(val) & 1;
+}
+#endif
+
 // bT is the FXTM "transposition" of a
 void multiplyFXTM(const FXTMatrix* a, const FXTMatrix* bT, FXTMatrix* c)
 {
@@ -55,8 +66,7 @@ void multiplyFXTM(const FXTMatrix* a, const FXTMatrix* bT, FXTMatrix* c)
             {
                 res <<= 1;
                 const uint64_t mulXor = (aLo & bT->M[0][qj][j]) ^ (aHi & bT->M[1][qj][j]);
-                //const int newBit = __popcnt64(mulXor) & 1;
-                const int newBit = __builtin_parityll(mulXor); // aka: GCC, do your thing!
+                const int newBit = getParity(mulXor);
                 res |= newBit; 
             }
 
