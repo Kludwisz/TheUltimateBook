@@ -60,6 +60,12 @@ static inline int xNextInt(Xoroshiro *xr, uint32_t n)
     return r >> 32;
 }
 
+static inline int xNextIntFast(Xoroshiro *xr, uint32_t n)
+{
+    uint64_t r = (xNextLong(xr) & 0xFFFFFFFF) * n;
+    return r >> 32;
+}
+
 static inline double xNextDouble(Xoroshiro *xr)
 {
     return (xNextLong(xr) >> (64-53)) * 1.1102230246251565E-16;
