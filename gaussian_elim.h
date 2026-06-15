@@ -23,6 +23,7 @@ struct Solution {
 
 // ----------------------------------
 
+int stateBitIndexOf(int varIndex);
 void initEquation(Equation *eq, uint64_t lhsLo, uint64_t lhsHi, int rhs);
 void xorEquationBy(Equation *a, const Equation *b);
 

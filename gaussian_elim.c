@@ -34,6 +34,19 @@ int eqnCompare(const void* a_void, const void* b_void)
     return 0;
 }
 
+int stateBitIndexOf(int varIndex) {
+    //return varIndex;
+
+    if (varIndex >= 64) {
+        // high bits, reverse order
+        return 63 - (varIndex - 64) + 64;
+    }
+    else {
+        // low bits, reverse order
+        return 63 - varIndex;
+    }
+}
+
 int gaussianElimGF2(Equation equations[], int equationCount, Solution* sol)
 {
     bool* usedEqns = (bool*)malloc(sizeof(bool) * equationCount);

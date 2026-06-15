@@ -91,19 +91,6 @@ int solveForStartingState(const ParameterSet *paramSet, Solution *sol)
     return 0;
 }
 
-static int stateBitIndexOf(int varIndex) {
-    //return varIndex;
-
-    if (varIndex >= 64) {
-        // high bits, reverse order
-        return 63 - (varIndex - 64) + 64;
-    }
-    else {
-        // low bits, reverse order
-        return 63 - varIndex;
-    }
-}
-
 // TODO make this much more efficient using parameter bitmasks
 void getAllXoroshiroStates(const Solution* sol, Xoroshiro* states, uint32_t maxStates)
 {

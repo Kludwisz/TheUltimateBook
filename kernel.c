@@ -71,13 +71,13 @@ Equation get_state_bit_equation(int stateJump, int statePart, int bitIndex, int 
 }
 
 Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t equation_seed) {
-    int eq_count = num_calls * 14;
+    int eq_count = num_calls * 13;
     Equation* eqns = malloc(eq_count * sizeof(Equation));
     if (eqns == NULL) return NULL;
 
     FXTMatrix fxtm = { 0 }, fxtmTransposed = { 0 };
 
-    int permutation[40] = {0};
+    int permutation[50] = {0};
     for (int i = 0; equation_seed > 0; i++) {
         permutation[i] = equation_seed % 3;
         equation_seed /= 3;
@@ -86,7 +86,7 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
     int eq_id = 0;
     int pm_id = 0;
     for (int c=state_offset, cnt=0; cnt < num_calls; cnt++, c+=2) {
-        /*
+        /* old approach (14 eqns):
             .......31 30 29 28 27 26 25 24..............
             ........p..0..0..0..1..0..0................. LO
             ........q..a..b..c..d..0..0................. ROTL17(LO)
@@ -94,21 +94,30 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
         -------------------------------------------------
             ........0..0..0..0..0.......................
         */
+        /* new approach (13 eqns):
+            .......31 30 29 28 27 26 25 24..............
+            ........p..0..0..0..0..1..0................. LO
+            ........q..a..b..c..d..e..0................. ROTL17(LO)
+        +   ........r..A..B..C..D..E.................... ROTL17(HI)
+        -------------------------------------------------
+            ........0..0..0..0..0.......................
+        */
 
         DEBUG("reached c = %d, pm_id = %d, eq_id = %d\n", c, pm_id, eq_id);
 
-        // 4 fixed-bit equations for cols 30-27 with permutations
-        int perms_30_27[4];
-        for (int i = 0; i < 4; i++, pm_id++) {
+        // 5 fixed-bit equations for cols 30-26 with permutations
+        int perms_30_27[5];
+        for (int i = 0; i < 5; i++, pm_id++) {
             perms_30_27[i] = permutation[pm_id];
         }
         eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[0], 30, 0);
         eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[1], 29, 0);
         eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[2], 28, 0);
-        eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[3], 27, 1);
+        eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[3], 27, 0);
+        eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[4], 26, 1);
 
-        // 4 aA pair equations for cols 30-27
-        for (int bit = 30, i = 0; bit >= 27; bit--, i++) {
+        // 5 aA pair equations for cols 30-26
+        for (int bit = 30, i = 0; bit >= 26; bit--, i++) {
             Equation col_eq;
             initEquation(&col_eq, 0, 0, 1); // note the 1 on the RHS here
             for (int p = 0; p < 3; p++) {
@@ -119,17 +128,9 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
             eqns[eq_id++] = col_eq;
         }
 
-        // column 26 is all zeros
-        eqns[eq_id++] = get_state_bit_equation(c, XORO_LOW, 26, 0);
-        eqns[eq_id++] = get_state_bit_equation(c, XORO_LOW_ROTL, 26, 0);
-        eqns[eq_id++] = get_state_bit_equation(c, XORO_HIGH_ROTL, 26, 0);
-
-        // col 25 also uses a permutation but in a "negative" way
-        int perm_col_25 = permutation[pm_id++]; 
-        for (int p = 0; p < 3; p++) {
-            if (p == perm_col_25) continue;
-            eqns[eq_id++] = get_state_bit_equation(c, p, 25, 0);
-        }
+        // col 25 has two zeros to reduce max carry - 2 equations
+        eqns[eq_id++] = get_state_bit_equation(c, XORO_LOW, 25, 0);
+        eqns[eq_id++] = get_state_bit_equation(c, XORO_LOW_ROTL, 25, 0);
 
         // 1 pqr equation for col 31
         Equation eq_p = get_state_bit_equation(c, XORO_LOW_ROTL, 31, 1); // also note the 1 on the RHS here
@@ -151,7 +152,67 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
 
 // ---------------------------------------
 // Bitmask set generator
-// ...
+
+typedef struct GroupMaskSet GroupMaskSet;
+struct GroupMaskSet {
+    //        block           iter    thread
+    // [2b][2b][2b][2b][2b] | [6b] | [4b][4b]
+    //
+    // block & thread masks - device memory
+    // iter masks - constant memory - each thread accesses the exact same elements
+
+    uint64_t MASK_BLOCK[5][4 * 2];
+    uint64_t MASK_THREAD[2][16 * 2];
+    uint64_t MASK_ITER[64 * 2];
+};
+
+void flip_bit(uint64_t *mask_lo, uint64_t *mask_hi, int state_bit_index) {
+    if (state_bit_index >= 64) {
+        *mask_hi ^= (1ULL << (state_bit_index - 64));
+    }
+    else {
+        *mask_lo ^= (1ULL << state_bit_index);
+    }
+}
+
+int is_param_set(Equation* eqn, int param_idx) {
+    uint64_t mask = eqn->lhs[param_idx / 64];
+    int shift = (63 - (param_idx % 64));
+    if (mask & (1ULL << shift)) {
+        return 1;
+    }
+    return 0;
+}
+
+void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
+    uint64_t per_param_masks[24 * 2];
+    
+    // firstly, calculate masks for individual parameters
+    for (int param_idx = 0, bit_idx = 0; param_idx < sol->parameterCount && bit_idx < 128; param_idx++) {
+        while (!(sol->isParameter[bit_idx])) {
+            bit_idx++;
+        }
+        uint64_t mask_lo = 0, mask_hi = 0;
+        flip_bit(&mask_lo, &mask_hi, stateBitIndexOf(bit_idx));
+
+        // for each equation where the parameter bit is set, flip the 
+        // dependent variable determined by that equation in the state mask
+        for (int eID = 0; eID < sol->numEquations; eID++) {
+            if (is_param_set(&(sol->equations[eID]), bit_idx)) {
+                flip_bit(&mask_lo, &mask_hi, stateBitIndexOf(sol->dependentVar[eID]));
+            }
+        }
+
+        per_param_masks[param_idx * 2] = mask_lo;
+        per_param_masks[param_idx * 2 + 1] = mask_hi;
+        bit_idx++;
+    }
+
+    // now we can combine the per-param masks and calculate "aggregated"
+    // flip masks for the parameter combinations defined in GroupMaskSet.
+
+    // TODO
+}
 
 // ---------------------------------------
 // GPU Kernel
@@ -165,8 +226,8 @@ void printXoro(const Xoroshiro* state)
     printf("Current Xoroshiro state:   ( %llu, %llu )\n", state->lo, state->hi);
 }
 
-int main() {
-    Solution* sol = generate_starting_solution(7, 5*2, 2 + 3);
+int test_solver() {
+    Solution* sol = generate_starting_solution(8, 5*2, 2 + 3);
 
     Xoroshiro states[8];
     getAllXoroshiroStates(sol, states, 8);
@@ -175,7 +236,7 @@ int main() {
     printXoro(&s);
     for (int i = 0; i < 10; i++)
         xNextLong(&s);
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 8; i++) {
         //testNextInt(&s, 50);
         //printf("xNextLong() = %08x\n", (unsigned int)(xNextLong(&s) & (0xFFFFFFFFu)));
         printf("nextInt(50) = %d\n", xNextInt(&s, 50));
@@ -184,4 +245,23 @@ int main() {
     
     free(sol);
     return 0;
+}
+
+int test_group_masks() {
+    Solution* sol = generate_starting_solution(8, 5*2, 2 + 3);
+    Xoroshiro startState;
+    getAllXoroshiroStates(sol, &state, 1);
+
+    GroupMaskSet gms;
+    generate_masks_for_solution(sol, &gms);
+    free(sol);
+
+    // TODO check if it's possible to use the group masks
+}
+
+int main() {
+    //return test_solver();
+    return test_group_masks();
+
+    //Solution* sol = generate_starting_solution(7, 5*2, 2 + 3);
 }
