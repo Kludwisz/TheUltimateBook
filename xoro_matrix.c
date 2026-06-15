@@ -1,6 +1,6 @@
 #include "xoro_matrix.h"
 #include "utils.h"
-#include <intrin.h>
+//#include <intrin.h>
 
 static const bool DEBUG_MODE = false;
 
@@ -55,8 +55,8 @@ void multiplyFXTM(const FXTMatrix* a, const FXTMatrix* bT, FXTMatrix* c)
             {
                 res <<= 1;
                 const uint64_t mulXor = (aLo & bT->M[0][qj][j]) ^ (aHi & bT->M[1][qj][j]);
-                const int newBit = __popcnt64(mulXor) & 1;
-                //const int newBit = __builtin_parityll(mulXor); // aka: GCC, do your thing!
+                //const int newBit = __popcnt64(mulXor) & 1;
+                const int newBit = __builtin_parityll(mulXor); // aka: GCC, do your thing!
                 res |= newBit; 
             }
 
