@@ -331,7 +331,7 @@ void run(std::uint64_t eqn_seed) {
     setup_search(eqn_seed, &initialState);
     
     result_count = 0;
-    gaussianElimIterKernel <<< 4, 4 >>> (initialState);
+    gaussianElimIterKernel <<< 1024, 256 >>> (initialState);
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
@@ -368,12 +368,12 @@ int main(int argc, char **argv) {
         if (r % 10 == 9) {
             t1 = std::chrono::steady_clock::now();
             const auto int_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
-            std::fprintf(stderr, "run %d/%d:  %d ms\n", r+1, num_runs, int_ms);
+            std::fprintf(stderr, "run %d/%d:  %d ms\n", r+1, static_cast<int>(num_runs), int_ms);
         }
 
         for (std::uint32_t i = 0; i < result_count; i++) {
             std::fprintf(stdout, "%" PRIu64 " %" PRIu64 "\n", results[i].lo, results[i].hi);
         }
-        eqn_seed++;
+        eqn_seed += 271;
     }
 }
