@@ -77,7 +77,7 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
 
     FXTMatrix fxtm = { 0 }, fxtmTransposed = { 0 };
 
-    int permutation[40];
+    int permutation[40] = {0};
     for (int i = 0; equation_seed > 0; i++) {
         permutation[i] = equation_seed % 3;
         equation_seed /= 3;
@@ -100,7 +100,7 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
         // 4 fixed-bit equations for cols 30-27 with permutations
         int perms_30_27[4];
         for (int i = 0; i < 4; i++, pm_id++) {
-            perms_30_27[i] = permutation[pm_id++];
+            perms_30_27[i] = permutation[pm_id];
         }
         eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[0], 30, 0);
         eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[1], 29, 0);
@@ -166,20 +166,20 @@ void printXoro(const Xoroshiro* state)
 }
 
 int main() {
-    Solution* sol = generate_starting_solution(7, 5*2, 0);
+    Solution* sol = generate_starting_solution(7, 5*2, 2 + 3);
 
     Xoroshiro states[8];
-    DEBUG("a");
     getAllXoroshiroStates(sol, states, 8);
-    DEBUG("b");
 
     Xoroshiro s = {states[1].lo, states[1].hi};
     printXoro(&s);
-    xNextLong(&s);
+    for (int i = 0; i < 10; i++)
+        xNextLong(&s);
     for (int i = 0; i < 7; i++) {
         //testNextInt(&s, 50);
         //printf("xNextLong() = %08x\n", (unsigned int)(xNextLong(&s) & (0xFFFFFFFFu)));
         printf("nextInt(50) = %d\n", xNextInt(&s, 50));
+        xNextLong(&s);
     }
     
     free(sol);
