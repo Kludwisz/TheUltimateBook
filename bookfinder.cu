@@ -25,14 +25,14 @@ We're setting the initial xoroshiro state to be at call #7.
 Firstly, we construct a system of GF(2) equations that gives a partial reversal
 of calls 12-18. This system of equations is solved using Gaussian elimination.
 
-The solution contains 98 dependent bits and 30 parameter bits. We divide the set
-of parameter bits into 8 groups - 4 bits each, with a smaller top bit group (2 bits).
+The solution contains 104 dependent bits and 24 parameter bits. We divide the set
+of parameter bits into smaller groups - block groups, thread groups, and the iteration group.
 For each bit combination within a group, state bit flip masks are calculated such that
 when xored with the initial solution state, the dependent variables are set to the 
 correct values for a given combination of parameter values. 
 
-Each GPU thread iterates through its assigned group of solutions and checks conditions
-8-11 going forward. Matching states are saved in a GPU local buffer.
+Each GPU thread iterates through its assigned group of solutions and checks the remaining conditions
+going forward. Matching states are saved in a GPU local buffer.
 
 Finaly, the forward filter takes all candidate states found so far and checks the remaining
 conditions in the enchantWithLevels pipeline. Matching states are saved as output.
@@ -354,7 +354,7 @@ void setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
     free(sol);
 
     // Copy data to device and constant mem
-    CUDA_CHECK(cudaMemcpyToSymbol(ITER_MASKS, gms.MASK_ITER, 128 * sizeof(uint64_t)));
+    CUDA_CHECK(cudaMemcpyToSymbol(ITER_MASKS, gms.MASK_ITER, N_ITER_MASKS * sizeof(uint64_t)));
 
     uint64_t BLOCK_MASKS_h[N_BLOCK_MASKS];
     uint64_t THREAD_MASKS_h[N_THREAD_MASKS];
@@ -383,9 +383,55 @@ void run(std::uint64_t eqn_seed) {
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
+void full_check(Xoroshiro state7, std::uint32_t& full_result_counter) {
+    // back 12 for the nextInt states, then back another (?) to undo the enchant_with_levels stuff
+    Xoroshiro base_state = state7;
+
+    // FULL_64, FULL_64 is 0
+    FXTMatrix back = {0};
+    fastXoroMatrixPower128(&XOROSHIRO_STANDARD_FXTM, FULL_64, FULL_64 - 20, &back);
+    advanceXoroshiroFXTM(&base_state, &back);
+
+    int max_enchants = 0;
+    for (int i = 0; i < 40; i++) {
+        Xoroshiro state = base_state;
+        
+        const std::uint32_t enchantability = 1;
+        const std::uint32_t delta = enchantability / 4 + 1;
+
+        std::uint32_t level = 31 + xNextInt(&state, delta) + xNextInt(&state, delta);
+        float f1 = xNextFloat(&state);
+        float f2 = xNextFloat(&state);
+        float amplifier = (f1 + f2 - 1.0F) * 0.15F;
+        level = std::floor( ((float)level + (float)level * amplifier) + 0.5F );
+        (void)xNextLong(&state);
+
+        int num_enchants = 1;
+        while (xNextInt(&state, 50) <= level) {
+            num_enchants++;
+            (void)xNextLong(&state);
+            level /= 2;
+        }
+        if (num_enchants > max_enchants) {
+            max_enchants = num_enchants;
+        }
+
+        if (num_enchants >= 17) {
+            full_result_counter++;
+            std::fprintf(stderr, "GOOD SOLUTION!\n");
+            std::fprintf(stderr, "%d %" PRIu64 " %" PRIu64 "\n", num_enchants, base_state.lo, base_state.hi);
+            std::fprintf(stdout, "%d %" PRIu64 " %" PRIu64 "\n", num_enchants, base_state.lo, base_state.hi);
+        }
+        (void)xNextLong(&base_state);
+    }
+
+    std::fprintf(stderr, "Candidate sol max enchants: %d\n", max_enchants);
+}
+
 int main(int argc, char **argv) {
     std::uint64_t start_eqn_seed = 0;
     std::uint32_t num_runs = 1;
+    std::uint32_t results_partial = 0, results_full = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--seed") == 0) {
@@ -411,34 +457,32 @@ int main(int argc, char **argv) {
     for (int r = 0; r < num_runs; r++) {
         run(eqn_seed);
 
-        if (r % 10 == 0) {
+        if (r % 50 == 0) {
             t0 = std::chrono::steady_clock::now();
         }
-        if (r % 10 == 9) {
+        if (r % 50 == 49) {
             t1 = std::chrono::steady_clock::now();
             const auto int_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-            std::fprintf(stderr, "run %d/%d:  %lld ms\n", r+1, static_cast<int>(num_runs), int_ms);
+            std::fprintf(stderr, "--- run %d/%d:  %lld ms  (res: p=%" PRIu32 " f=%" PRIu32 ")\n", 
+                r+1, static_cast<int>(num_runs), int_ms, results_partial, results_full);
         }
 
         for (std::uint32_t i = 0; i < result_count; i++) {
             if (solutions.find(results[i]) == solutions.end()) {
-                std::fprintf(stdout, "%" PRIu64 " %" PRIu64 "\n", results[i].lo, results[i].hi);
                 solutions.insert(results[i]);
-
+                results_partial++;
+                std::fprintf(stderr, "New candidate sol: %" PRIu64 " %" PRIu64 "\n", results[i].lo, results[i].hi);
                 Xoroshiro xr = results[i];
-                for (int i = 0; i < NUM_REVERSED_STATES + STATE_JUMP_SIZE; i++) { 
-                    std::fprintf(stderr, "nextInt(50) = %d\n", xNextInt(&xr, 50));
-                    xNextLong(&xr);
-                }
+                full_check(xr, results_full);
             }
         }
-        if (r % 20 == 0) {
+        if (r % 10 == 0) {
             Xoroshiro next;
             xSetSeed(&next, eqn_seed);
             eqn_seed = xNextLongJ(&next);
         }
         else {
-            eqn_seed += 1;
+            eqn_seed += 1 + 81 + 81*81;
         }
     }
 }
