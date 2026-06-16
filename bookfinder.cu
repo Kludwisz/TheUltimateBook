@@ -95,52 +95,70 @@ constexpr std::uint32_t N_RESULTS_MAX = 128 * 1024;
 __managed__ Xoroshiro results[N_RESULTS_MAX];
 __managed__ uint32_t result_count = 0;
 
+__device__ __forceinline__ bool process(Xoroshiro state, uint64_t lo, uint64_t hi) {
+    state.lo ^= lo;
+    state.hi ^= hi;
+
+    bool next_iter = false;
+    #pragma unroll
+    for (int j = 0; j < STATE_JUMP_SIZE; j++) {
+        if (xNextIntFast(&state, 50) != 0) {
+            next_iter = true;
+            break; // filter
+        }
+        (void)xNextLong(&state); // skip 1
+    }
+
+    if (next_iter) {
+        return false;
+    }
+
+    return true;
+}
+
 // the kernel
 __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
     // per-thread computations
     std::uint32_t tid = threadIdx.x;
-    initialState.lo ^= THREAD_MASKS[(tid & MASK_T) * 2];
-    initialState.hi ^= THREAD_MASKS[(tid & MASK_T) * 2 + 1];
+
+    ulonglong2 data0 = reinterpret_cast<ulonglong2 *>(THREAD_MASKS)[(tid & MASK_T)];
+    initialState.lo ^= data0.x;
+    initialState.hi ^= data0.y;
     tid >>= 4;
-    initialState.lo ^= THREAD_MASKS[GROUP_T + (tid & MASK_T) * 2];
-    initialState.hi ^= THREAD_MASKS[GROUP_T + (tid & MASK_T) * 2 + 1];
+    ulonglong2 data1 = reinterpret_cast<ulonglong2 *>(THREAD_MASKS)[(GROUP_T>>1) + (tid & MASK_T)];
+    initialState.lo ^= data1.x;
+    initialState.hi ^= data1.y;
 
     // per-block computations
     std::uint32_t bid = blockIdx.x;
     #pragma unroll
     for (int i = 0; i < BLOCK_MASK_GROUPS; i++) {
-        initialState.lo ^= BLOCK_MASKS[i*GROUP_B + (bid & MASK_B) * 2];
-        initialState.hi ^= BLOCK_MASKS[i*GROUP_B + (bid & MASK_B) * 2 + 1];
+        ulonglong2 data = reinterpret_cast<ulonglong2 *>(BLOCK_MASKS)[i*(GROUP_B>>1) + (bid & MASK_B)];
+
+        initialState.lo ^= data.x;
+        initialState.hi ^= data.y;
         bid >>= 2;
     }
 
     // We have the initial state. Now all remaining state jump operations will be
     // handled using fully precomputed mask values stored in __constant__ memory. 
-
-    for (int iterIndex = 0; iterIndex <= MASK_I; iterIndex++) {
-        //printf("thread %d: %llu\n", threadIdx.x, ITER_MASKS[iterIndex*2]);
-        Xoroshiro state = initialState;
-        state.lo ^= ITER_MASKS[iterIndex*2];
-        state.hi ^= ITER_MASKS[iterIndex*2 + 1];
-
-        bool next_iter = false;
-        #pragma unroll
-        for (int j = 0; j < STATE_JUMP_SIZE; j++) {
-            if (xNextIntFast(&state, 50) != 0) {
-                next_iter = true;
-                break; // filter
-            }
-            (void)xNextLong(&state); // skip 1
-        }
-
-        if (next_iter) {
-            continue;
-        }
-
-        {   // got a partial result
+    #pragma unroll
+    for (int iterIndex = 0; iterIndex <= MASK_I >> 1; iterIndex++) {
+        ulonglong4_16a data = reinterpret_cast<ulonglong4_16a *>(ITER_MASKS)[iterIndex];
+        if (process(initialState, data.x, data.y)) {   // got a partial result
             Xoroshiro out = initialState;
-            out.lo ^= ITER_MASKS[iterIndex*2];
-            out.hi ^= ITER_MASKS[iterIndex*2 + 1];
+            out.lo ^= data.x;
+            out.hi ^= data.y;
+
+            if (result_count < N_RESULTS_MAX) {
+                int idx = atomicAdd(&result_count, 1);
+                results[idx] = out;
+            }
+        }
+        if (process(initialState, data.z, data.w)) {  
+            Xoroshiro out = initialState;
+            out.lo ^= data.z;
+            out.hi ^= data.w;
 
             if (result_count < N_RESULTS_MAX) {
                 int idx = atomicAdd(&result_count, 1);
@@ -149,7 +167,6 @@ __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
         }
     }
 }
-
 
 // -------------------------------------------------------------------------------
 // Host side code: parse input args, solve the system of equations, load the 

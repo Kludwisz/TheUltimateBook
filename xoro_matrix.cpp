@@ -40,8 +40,9 @@ void transposeFXTM(const FXTMatrix* matrix, FXTMatrix* transposed)
 // -----------------------------------------------------------
 
 #ifdef __GNUC__
+#include <x86intrin.h>
 int getParity(uint64_t val) {
-    const int newBit = __builtin_parityll(mulXor); // aka: GCC, do your thing!
+    return _popcnt64(val) & 1;
 }
 #else
 #include <intrin.h>
