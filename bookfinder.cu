@@ -326,7 +326,7 @@ void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
     for (int block_group_idx = 0; block_group_idx < BLOCK_MASK_GROUPS; block_group_idx++) {
         fill_mask_group(gms->MASK_BLOCK[block_group_idx], per_param_masks, 
             0 + BLOCK_MASK_BITS*block_group_idx, 
-            THREAD_MASK_BITS - 1 + BLOCK_MASK_BITS * block_group_idx
+            BLOCK_MASK_BITS - 1 + BLOCK_MASK_BITS * block_group_idx
         );
     }
 
@@ -432,6 +432,13 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        eqn_seed += 1;
+        if (r % 20 == 0) {
+            Xoroshiro next;
+            xSetSeed(&next, eqn_seed);
+            eqn_seed = xNextLongJ(&next);
+        }
+        else {
+            eqn_seed += 1;
+        }
     }
 }
