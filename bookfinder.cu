@@ -49,20 +49,49 @@ conditions in the enchantWithLevels pipeline. Matching states are saved as outpu
 #include "xoro_matrix.h"
 #include "state_solver.h"
 
+// Algorithm parameters
+constexpr std::uint32_t NUM_REVERSED_STATES = 8;
+constexpr std::uint32_t STATE_JUMP_SIZE = 5;
+constexpr std::uint32_t ITER_MASK_BITS = 6;
+constexpr std::uint32_t THREAD_MASK_BITS = 4;
+constexpr std::uint32_t THREAD_MASK_GROUPS = 2;
+constexpr std::uint32_t BLOCK_MASK_BITS = 2;
+constexpr std::uint32_t BLOCK_MASK_GROUPS = 5;
+
+constexpr std::uint32_t THREADS_PER_BLOCK = 256;
+
+
+// safeguards
+constexpr std::uint32_t TOTAL_PARAM_BITS = ITER_MASK_BITS 
+        + THREAD_MASK_BITS * THREAD_MASK_GROUPS 
+        + BLOCK_MASK_BITS * BLOCK_MASK_GROUPS;
+constexpr std::uint32_t EXPECTED_PARAM_BITS = 128 - 13 * NUM_REVERSED_STATES;
+
+static_assert(TOTAL_PARAM_BITS == EXPECTED_PARAM_BITS, "Invalid total parameter bits, review the input data.");
+static_assert(THREADS_PER_BLOCK == (1U << (THREAD_MASK_BITS * THREAD_MASK_GROUPS)), "The thread mask size must match THREADS_PER_BLOCK.");
 
 // --------------------------------------------------------------------------------
 // GPU side code: just go brrrrrr and crunch as many Xoroshiro states as possible.
 
 // kernel input data
-constexpr std::uint32_t N_ITER_MASKS = 64 * 2;
-constexpr std::uint32_t N_BLOCK_MASKS = 5 * 4 * 2;
-constexpr std::uint32_t N_THREAD_MASKS = 2 * 16 * 2;
+
+
+constexpr std::uint32_t N_ITER_MASKS = (1U << ITER_MASK_BITS) * 2;
+constexpr std::uint32_t N_BLOCK_MASKS = BLOCK_MASK_GROUPS * (1U << BLOCK_MASK_BITS) * 2;
+constexpr std::uint32_t N_THREAD_MASKS = THREAD_MASK_GROUPS * (1U << THREAD_MASK_BITS) * 2;
 __device__   std::uint64_t THREAD_MASKS[N_THREAD_MASKS];
 __device__   std::uint64_t BLOCK_MASKS[N_BLOCK_MASKS];
 __constant__ std::uint64_t ITER_MASKS[N_ITER_MASKS];
 
+constexpr std::uint32_t MASK_I = (1U << ITER_MASK_BITS) - 1;
+constexpr std::uint32_t MASK_T = (1U << THREAD_MASK_BITS) - 1;
+constexpr std::uint32_t MASK_B = (1U << BLOCK_MASK_BITS) - 1;
+constexpr std::uint32_t GROUP_I = (1U << ITER_MASK_BITS) * 2;
+constexpr std::uint32_t GROUP_T = (1U << THREAD_MASK_BITS) * 2;
+constexpr std::uint32_t GROUP_B = (1U << BLOCK_MASK_BITS) * 2;
+
 // kernel output data
-constexpr std::uint32_t N_RESULTS_MAX = 1024;
+constexpr std::uint32_t N_RESULTS_MAX = 128 * 1024;
 __managed__ Xoroshiro results[N_RESULTS_MAX];
 __managed__ uint32_t result_count = 0;
 
@@ -70,47 +99,53 @@ __managed__ uint32_t result_count = 0;
 __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
     // per-thread computations
     std::uint32_t tid = threadIdx.x;
-    initialState.lo ^= THREAD_MASKS[(tid & 0b1111) * 2];
-    initialState.hi ^= THREAD_MASKS[(tid & 0b1111) * 2 + 1];
+    initialState.lo ^= THREAD_MASKS[(tid & MASK_T) * 2];
+    initialState.hi ^= THREAD_MASKS[(tid & MASK_T) * 2 + 1];
     tid >>= 4;
-    initialState.lo ^= THREAD_MASKS[32 + (tid & 0b1111) * 2];
-    initialState.hi ^= THREAD_MASKS[32 + (tid & 0b1111) * 2 + 1];
+    initialState.lo ^= THREAD_MASKS[GROUP_T + (tid & MASK_T) * 2];
+    initialState.hi ^= THREAD_MASKS[GROUP_T + (tid & MASK_T) * 2 + 1];
 
     // per-block computations
     std::uint32_t bid = blockIdx.x;
     #pragma unroll
-    for (int i = 0; i < 5; i++) {
-        initialState.lo ^= BLOCK_MASKS[i*8 + (bid & 0b11) * 2];
-        initialState.hi ^= BLOCK_MASKS[i*8 + (bid & 0b11) * 2 + 1];
+    for (int i = 0; i < BLOCK_MASK_GROUPS; i++) {
+        initialState.lo ^= BLOCK_MASKS[i*GROUP_B + (bid & MASK_B) * 2];
+        initialState.hi ^= BLOCK_MASKS[i*GROUP_B + (bid & MASK_B) * 2 + 1];
         bid >>= 2;
     }
 
     // We have the initial state. Now all remaining state jump operations will be
     // handled using fully precomputed mask values stored in __constant__ memory. 
 
-    for (int iterIndex = 0; iterIndex < 64; iterIndex++) {
+    for (int iterIndex = 0; iterIndex <= MASK_I; iterIndex++) {
         //printf("thread %d: %llu\n", threadIdx.x, ITER_MASKS[iterIndex*2]);
         Xoroshiro state = initialState;
         state.lo ^= ITER_MASKS[iterIndex*2];
         state.hi ^= ITER_MASKS[iterIndex*2 + 1];
 
-        if (xNextIntFast(&state, 50) != 0) continue; // 7
-        xNextLong(&state); // skip 1
-        if (xNextIntFast(&state, 50) != 0) continue; // 8
-        xNextLong(&state); // skip 1
-        if (xNextIntFast(&state, 50) != 0) continue; // 9
-        xNextLong(&state); // skip 1
-        if (xNextIntFast(&state, 50) != 0) continue; // 10
-        xNextLong(&state); // skip 1
-        if (xNextIntFast(&state, 50) != 0) continue; // 11
+        bool next_iter = false;
+        #pragma unroll
+        for (int j = 0; j < STATE_JUMP_SIZE; j++) {
+            if (xNextIntFast(&state, 50) != 0) {
+                next_iter = true;
+                break; // filter
+            }
+            (void)xNextLong(&state); // skip 1
+        }
+
+        if (next_iter) {
+            continue;
+        }
 
         {   // got a partial result
             Xoroshiro out = initialState;
             out.lo ^= ITER_MASKS[iterIndex*2];
             out.hi ^= ITER_MASKS[iterIndex*2 + 1];
 
-            int idx = atomicAdd(&result_count, 1);
-            results[idx] = out;
+            if (result_count < N_RESULTS_MAX) {
+                int idx = atomicAdd(&result_count, 1);
+                results[idx] = out;
+            }
         }
     }
 }
@@ -149,7 +184,7 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
     Equation* eqns = static_cast<Equation*>(malloc(eq_count * sizeof(Equation)));
     if (eqns == NULL) return NULL;
 
-    int permutation[50] = {0};
+    int permutation[64] = {0};
     for (int i = 0; equation_seed > 0; i++) {
         permutation[i] = equation_seed % 3;
         equation_seed /= 3;
@@ -215,15 +250,11 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
 
 typedef struct GroupMaskSet GroupMaskSet;
 struct GroupMaskSet {
-    //        block           iter    thread
-    // [2b][2b][2b][2b][2b] | [6b] | [4b][4b]
-    //
     // block & thread masks - device memory
     // iter masks - constant memory - each thread accesses the exact same elements
-
-    uint64_t MASK_BLOCK[5][4 * 2];
-    uint64_t MASK_THREAD[2][16 * 2];
-    uint64_t MASK_ITER[64 * 2];
+    uint64_t MASK_BLOCK[BLOCK_MASK_GROUPS][GROUP_B];
+    uint64_t MASK_THREAD[THREAD_MASK_GROUPS][GROUP_T];
+    uint64_t MASK_ITER[GROUP_I];
 };
 
 void flip_bit(uint64_t *mask_lo, uint64_t *mask_hi, int state_bit_index) {
@@ -266,7 +297,7 @@ void fill_mask_group(uint64_t mask_group[], uint64_t per_param_masks[], int para
 }
 
 void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
-    uint64_t per_param_masks[24 * 2];
+    uint64_t per_param_masks[TOTAL_PARAM_BITS * 2];
     
     // firstly, calculate masks for individual parameters
     for (int param_idx = 0, bit_idx = 0; param_idx < sol->parameterCount && bit_idx < 128; param_idx++) {
@@ -292,21 +323,31 @@ void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
     // now we can combine the per-param masks and calculate "aggregated"
     // flip masks for the parameter combinations defined in GroupMaskSet.
 
-    for (int block_group_idx = 0; block_group_idx < 5; block_group_idx++) {
-        fill_mask_group(gms->MASK_BLOCK[block_group_idx], per_param_masks, 0 + 2*block_group_idx, 1 + 2*block_group_idx);
+    for (int block_group_idx = 0; block_group_idx < BLOCK_MASK_GROUPS; block_group_idx++) {
+        fill_mask_group(gms->MASK_BLOCK[block_group_idx], per_param_masks, 
+            0 + BLOCK_MASK_BITS*block_group_idx, 
+            THREAD_MASK_BITS - 1 + BLOCK_MASK_BITS * block_group_idx
+        );
     }
 
-    fill_mask_group(gms->MASK_ITER, per_param_masks, 10, 15);
+    constexpr std::uint32_t min_iter_bit = 2 + BLOCK_MASK_BITS * (BLOCK_MASK_GROUPS - 1);
+    constexpr std::uint32_t max_iter_bit = min_iter_bit + ITER_MASK_BITS - 1;
+    fill_mask_group(gms->MASK_ITER, per_param_masks, min_iter_bit, max_iter_bit);
 
-    for (int thread_group_idx = 0; thread_group_idx < 2; thread_group_idx++) {
-        fill_mask_group(gms->MASK_THREAD[thread_group_idx], per_param_masks, 16 + 4*thread_group_idx, 19 + 4*thread_group_idx);
+    constexpr std::uint32_t min_thread_bit = max_iter_bit + 1;
+    constexpr std::uint32_t max_thread_bit = min_thread_bit + THREAD_MASK_BITS - 1;
+    for (int thread_group_idx = 0; thread_group_idx < THREAD_MASK_GROUPS; thread_group_idx++) {
+        fill_mask_group(gms->MASK_THREAD[thread_group_idx], per_param_masks, 
+            min_thread_bit + THREAD_MASK_BITS * thread_group_idx, 
+            max_thread_bit + THREAD_MASK_BITS * thread_group_idx
+        );
     }
 }
 
 
 void setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
     // Generate masks & initial state
-    Solution *sol = generate_starting_solution(8, 5*2, eqn_seed);
+    Solution *sol = generate_starting_solution(NUM_REVERSED_STATES, STATE_JUMP_SIZE*2, eqn_seed);
     getAllXoroshiroStates(sol, initialState, 1);
     GroupMaskSet gms;
     generate_masks_for_solution(sol, &gms);
@@ -317,14 +358,14 @@ void setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
 
     uint64_t BLOCK_MASKS_h[N_BLOCK_MASKS];
     uint64_t THREAD_MASKS_h[N_THREAD_MASKS];
-    for (int i = 0; i < 5; i++) {
-        for (int j = 0; j < 8; j++) {
-            BLOCK_MASKS_h[i*8 + j] = gms.MASK_BLOCK[i][j];
+    for (int i = 0; i < BLOCK_MASK_GROUPS; i++) {
+        for (int j = 0; j < GROUP_B; j++) {
+            BLOCK_MASKS_h[i * GROUP_B + j] = gms.MASK_BLOCK[i][j];
         }
     }
-    for (int i = 0; i < 2; i++) {
-        for (int j = 0; j < 32; j++) {
-            THREAD_MASKS_h[i*32 + j] = gms.MASK_THREAD[i][j];
+    for (int i = 0; i < THREAD_MASK_GROUPS; i++) {
+        for (int j = 0; j < GROUP_T; j++) {
+            THREAD_MASKS_h[i * GROUP_T + j] = gms.MASK_THREAD[i][j];
         }
     }
     CUDA_CHECK(cudaMemcpyToSymbol(BLOCK_MASKS, BLOCK_MASKS_h, N_BLOCK_MASKS * sizeof(uint64_t)));
@@ -336,7 +377,9 @@ void run(std::uint64_t eqn_seed) {
     setup_search(eqn_seed, &initialState);
     
     result_count = 0;
-    gaussianElimIterKernel <<< 1024, 256 >>> (initialState);
+
+    constexpr std::uint32_t N_BLOCKS = (1U << (TOTAL_PARAM_BITS - ITER_MASK_BITS)) / THREADS_PER_BLOCK;
+    gaussianElimIterKernel <<< N_BLOCKS, THREADS_PER_BLOCK >>> (initialState);
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
@@ -373,8 +416,8 @@ int main(int argc, char **argv) {
         }
         if (r % 10 == 9) {
             t1 = std::chrono::steady_clock::now();
-            const auto int_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
-            std::fprintf(stderr, "run %d/%d:  %d ms\n", r+1, static_cast<int>(num_runs), int_ms);
+            const auto int_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+            std::fprintf(stderr, "run %d/%d:  %lld ms\n", r+1, static_cast<int>(num_runs), int_ms);
         }
 
         for (std::uint32_t i = 0; i < result_count; i++) {
@@ -383,7 +426,7 @@ int main(int argc, char **argv) {
                 solutions.insert(results[i]);
 
                 Xoroshiro xr = results[i];
-                for (int i = 0; i < 13; i++) { 
+                for (int i = 0; i < NUM_REVERSED_STATES + STATE_JUMP_SIZE; i++) { 
                     std::fprintf(stderr, "nextInt(50) = %d\n", xNextInt(&xr, 50));
                     xNextLong(&xr);
                 }
