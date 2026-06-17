@@ -144,7 +144,10 @@ __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
     // handled using fully precomputed mask values stored in __constant__ memory. 
     #pragma unroll
     for (int iterIndex = 0; iterIndex <= MASK_I >> 1; iterIndex++) {
-        ulonglong4_16a data = reinterpret_cast<ulonglong4_16a *>(ITER_MASKS)[iterIndex];
+        #ifdef OLD_CUDA
+            #define ulonglong4_a16 ulonglong4
+        #endif
+        ulonglong4_a16 data = reinterpret_cast<ulonglong4_a16 *>(ITER_MASKS)[iterIndex];
         if (process(initialState, data.x, data.y)) {   // got a partial result
             Xoroshiro out = initialState;
             out.lo ^= data.x;
@@ -493,13 +496,13 @@ int main(int argc, char **argv) {
                 full_check(xr, results_full);
             }
         }
-        if (r % 10 == 0) {
+        //if (r % 10 == 0) {
             Xoroshiro next;
             xSetSeed(&next, eqn_seed);
             eqn_seed = xNextLongJ(&next);
-        }
-        else {
-            eqn_seed += 1 + 81 + 81*81;
-        }
+        //}
+        //else {
+        //    eqn_seed += 1 + 81 + 81*81;
+        //}
     }
 }
