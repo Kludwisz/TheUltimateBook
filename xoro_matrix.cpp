@@ -214,6 +214,53 @@ void fastAdvanceXoroshiroFXTM(Xoroshiro *state, const FXTMatrix* fxtmT)
     state->hi = newState[1];
 }
 
+static void xorRows(FXTMatrix *left, FXTMatrix *right, int src_q, int src_i, int dst_q, int dst_i)
+{
+    for (int qj = 0; qj < 2; qj++) {
+        left->M[dst_q][qj][dst_i] ^= left->M[src_q][qj][src_i];
+        right->M[dst_q][qj][dst_i] ^= right->M[src_q][qj][src_i];
+    }
+}
+
+void invertFXTM(const FXTMatrix *fxtm, FXTMatrix *inverted)
+{
+    FXTMatrix left, right;
+    copyFXTM(fxtm, &left);
+    makeIdentityFXTM(&right);
+
+    for (int diag = 0; diag < 128; diag++) {
+        int p_q = diag / 64;
+        int p_i = diag % 64;
+        int p_bit = 63 - p_i;
+
+        int val = (left.M[p_q][p_q][p_i] >> p_bit) & 1;
+        if (val == 0) {
+            // Find another row below the row currently being fixed that has a 1 in the target col
+            for (int r = diag + 1; r < 128; r++) {
+                int r_q = r / 64;
+                int r_i = r % 64;
+                int r_val = (left.M[r_q][p_q][r_i] >> p_bit) & 1;
+                if (r_val == 1) {
+                    xorRows(&left, &right, r_q, r_i, p_q, p_i);
+                    break;
+                }
+            }
+        }
+
+        for (int row = 0; row < 128; row++) {
+            if (row == diag) continue;
+            int r_q = row / 64;
+            int r_i = row % 64;
+            int r_val = (left.M[r_q][p_q][r_i] >> p_bit) & 1;
+            if (r_val == 1) {
+                xorRows(&left, &right, p_q, p_i, r_q, r_i);
+            }
+        }
+    }
+
+    copyFXTM(&right, inverted);
+}
+
 /*
 static void printXoro(const Xoroshiro* state)
 {
@@ -222,15 +269,15 @@ static void printXoro(const Xoroshiro* state)
 
 int main() {
     Xoroshiro a, b;
-    a.lo = b.lo = 12345;
-    a.hi = b.hi = 54321;
+    a.lo = b.lo = 0;
+    a.hi = b.hi = 1;
 
-    FXTMatrix m = {0}, mT = {0};
-    fastXoroMatrixPower(&XOROSHIRO_STANDARD_FXTM, 5, &m);
-    transposeFXTM(&m, &mT);
+    FXTMatrix xInv, xInvInv;
+    invertFXTM(&XOROSHIRO_STANDARD_FXTM, &xInv);
+    invertFXTM(&xInv, &xInvInv);
 
-    advanceXoroshiroFXTM(&a, &m);
-    fastAdvanceXoroshiroFXTM(&b, &mT);
+    advanceXoroshiroFXTM(&a, &XOROSHIRO_STANDARD_FXTM);
+    advanceXoroshiroFXTM(&b, &xInvInv);
 
     printXoro(&a);
     printXoro(&b);
