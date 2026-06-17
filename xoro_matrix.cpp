@@ -41,7 +41,7 @@ void transposeFXTM(const FXTMatrix* matrix, FXTMatrix* transposed)
 
 #ifdef __GNUC__
 int getParity(uint64_t val) {
-    const int newBit = __builtin_parityll(mulXor); // aka: GCC, do your thing!
+    return __builtin_parityll(val); // aka: GCC, do your thing!
 }
 #else
 #include <intrin.h>
@@ -50,7 +50,7 @@ int getParity(uint64_t val) {
 }
 #endif
 
-// bT is the FXTM "transposition" of a
+// bT is the FXTM "transposition" of b
 void multiplyFXTM(const FXTMatrix* a, const FXTMatrix* bT, FXTMatrix* c)
 {
     // calculate each bit in the result matrix separately
@@ -76,71 +76,15 @@ void multiplyFXTM(const FXTMatrix* a, const FXTMatrix* bT, FXTMatrix* c)
     }
 }
 
-// void xoroMatrixPowerHelper(
-//     uint64_t partialPower, bool shouldFillPowers, bool* isResultZero, 
-//     FXTMatrix **currentPower, FXTMatrix **nextPower, FXTMatrix **currentResult, FXTMatrix **nextResult
-// )
-// {
-//     FXTMatrix transposed = { 0 };
-//     FXTMatrix *temp;
-
-//     int i = 1;
-//     while (partialPower != 0ULL || (shouldFillPowers && i <= 64))
-//     {
-//         bool transpositionDone = false;
-
-//         if (partialPower & 1ULL)
-//         {
-//             DEBUG("if power & 1:  power = %llu\n", partialPower);
-//             if (*isResultZero)
-//             {
-//                 copyFXTM(*currentPower, *nextResult);
-//                 DEBUG("copied successfully\n");
-//                 *isResultZero = false;
-//             }
-//             else
-//             {
-//                 transposeFXTM(*currentPower, &transposed);
-//                 transpositionDone = true;
-//                 DEBUG("else: transposed successfully\n");
-//                 multiplyFXTM(*currentResult, &transposed, *nextResult);
-//                 DEBUG("else: performed fast mul successfully\n");
-//             }
-                
-//             // swap next and current result, clearing space for the next operations
-//             temp = *currentResult;
-//             *currentResult = *nextResult;
-//             *nextResult = temp;
-//         }
-
-//         // only calculate next power when needed
-//         partialPower >>= 1;
-//         if (partialPower != 0ULL || shouldFillPowers)
-//         {
-//             // create the transposition of currentPower
-//             DEBUG("calc next:  power = %llu\n", partialPower)
-//             if (!transpositionDone)
-//                 transposeFXTM(*currentPower, &transposed);
-
-//             // perform a very fast, quasi-quadratic matrix multiplication
-//             multiplyFXTM(*currentPower, &transposed, *nextPower);
-
-//             // swap next and current power, making space for the next operations
-//             temp = *currentPower;
-//             *currentPower = *nextPower;
-//             *nextPower = temp;
-//         }
-
-//         printf("%d\n", i);
-//         i++;
-//     }
-// }
+void makeIdentityFXTM(FXTMatrix* fxtm) {
+    // not exactly what you call "fast" but i was too lazy to hardcode an identity matrix lol
+    fastXoroMatrixPower128(&XOROSHIRO_STANDARD_FXTM, FULL_64, FULL_64, fxtm);
+}
 
 void fastXoroMatrixPower(const FXTMatrix *matrix, uint64_t power, FXTMatrix *result)
 {
     if (power == 0) {
-        // not exactly what you call "fast" but i was too lazy to hardcode an identity matrix lol
-        fastXoroMatrixPower128(matrix, FULL_64, FULL_64, result);
+        makeIdentityFXTM(result);
     }
     else {
         fastXoroMatrixPower128(matrix, 0ULL, power, result);
@@ -253,3 +197,42 @@ void advanceXoroshiroFXTM(Xoroshiro *state, const FXTMatrix* fxtm)
     state->lo = newState[0];
     state->hi = newState[1];
 }
+
+void fastAdvanceXoroshiroFXTM(Xoroshiro *state, const FXTMatrix* fxtmT)
+{
+    uint64_t oldState[2] = { state->lo, state->hi };
+    uint64_t newState[2] = { 0ULL, 0ULL };
+
+    for (int qi = 0; qi < 2; qi++) {
+        for (int i = 0; i < 64; i++) {
+            const uint64_t mulXor = (oldState[0] & fxtmT->M[0][qi][63-i]) ^ (oldState[1] & fxtmT->M[1][qi][63-i]);
+            newState[qi] |= static_cast<uint64_t>(getParity(mulXor)) << i;
+        }
+    }
+
+    state->lo = newState[0];
+    state->hi = newState[1];
+}
+
+/*
+static void printXoro(const Xoroshiro* state)
+{
+    printf("Current Xoroshiro state:   %016llx-%016llx\n", state->lo, state->hi);
+}
+
+int main() {
+    Xoroshiro a, b;
+    a.lo = b.lo = 12345;
+    a.hi = b.hi = 54321;
+
+    FXTMatrix m = {0}, mT = {0};
+    fastXoroMatrixPower(&XOROSHIRO_STANDARD_FXTM, 5, &m);
+    transposeFXTM(&m, &mT);
+
+    advanceXoroshiroFXTM(&a, &m);
+    fastAdvanceXoroshiroFXTM(&b, &mT);
+
+    printXoro(&a);
+    printXoro(&b);
+}
+*/
