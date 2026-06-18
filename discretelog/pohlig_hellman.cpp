@@ -63,9 +63,20 @@ void advance_infint(Xoroshiro *state, const InfInt& jump) {
     uint64_t lo = (jump % two64).toUnsignedLongLong();
     uint64_t hi = (jump / two64).toUnsignedLongLong();
 
-    FXTMatrix fxtm;
+    FXTMatrix fxtm, fxtmT;
     fastXoroMatrixPower128(&XOROSHIRO_STANDARD_FXTM, hi, lo, &fxtm);
-    fastAdvanceXoroshiroFXTM(state, &fxtm);
+    transposeFXTM(&fxtm, &fxtmT);
+    fastAdvanceXoroshiroFXTM(state, &fxtmT);
+}
+
+uint64_t reverse_bits(uint64_t val) {
+    uint64_t res = 0;
+    for (uint32_t sh = 0; sh < 64; sh++) {
+        res <<= 1;
+        res |= val & 1;
+        val >>= 1;
+    }
+    return res;
 }
 
 void xoroshiro_discrete_log_test(Xoroshiro a, Xoroshiro b) {
@@ -85,17 +96,25 @@ void xoroshiro_discrete_log_test(Xoroshiro a, Xoroshiro b) {
     for (int row = 0; row < 128; row++) {
         int qj = row / 64;
         int j = row % 64;
-        Ks.M[0][qj][j] = curr_s.lo;
-        Ks.M[1][qj][j] = curr_s.hi;
-        Kt.M[0][qj][j] = curr_t.lo;
-        Kt.M[1][qj][j] = curr_t.hi;
+        Ks.M[qj][0][j] = curr_s.lo;
+        Ks.M[qj][1][j] = curr_s.hi;
+        Kt.M[qj][0][j] = curr_t.lo;
+        Kt.M[qj][1][j] = curr_t.hi;
+        
         fastAdvanceXoroshiroFXTM(&curr_s, &MT);
         fastAdvanceXoroshiroFXTM(&curr_t, &MT);
     }
 
     // Reconstruct A = M^n
     invertFXTM(&Ks, &Ksinv);
-    multiplyFXTM(&Ksinv, &Kt, &A);
+
+    FXTMatrix KtT;
+    transposeFXTM(&Kt, &KtT);
+    multiplyFXTM(&Ksinv, &KtT, &A);
+
+    //printf("Target A: %016llx-%016llx\n", XOROSHIRO_STANDARD_FXTM.M[0][0][0], XOROSHIRO_STANDARD_FXTM.M[1][0][0]);
+    //printf("Calced A: %016llx-%016llx\n", A.M[0][0][0], A.M[1][0][0]);
+    //return;
 
     InfInt remainders[9];
     InfInt work_factors[9];
@@ -103,22 +122,19 @@ void xoroshiro_discrete_log_test(Xoroshiro a, Xoroshiro b) {
         work_factors[i] = factors[i];
     }
 
-    uint64_t n = 17;
-    FXTMatrix Ad, Adinv;
-    
-    project_into_subgroup(&A, &Ad, n);
-    invertFXTM(&Ad, &Adinv);
-    uint64_t dl = solve_discrete_log(&Ad, &Adinv, n);
-    printf("discrete log for subgroup N=%llu : %llu\n", n, dl);
-    return;
+    // uint64_t n = 5;
+    // FXTMatrix Ad, Md, Mdinv;
+    // project_into_subgroup(&A, &Ad, &Md, &Mdinv, n);
+    // uint64_t dl = solve_discrete_log(&Ad, &Md, &Mdinv, n);
+    // printf("discrete log for subgroup N=%llu : %llu\n", n, dl);
+    // return;
 
     for (int i = 0; i < 9; i++) {
         uint64_t n = work_factors[i].toUnsignedLongLong();
-        FXTMatrix Ad, Adinv;
-        
-        project_into_subgroup(&A, &Ad, n);
-        invertFXTM(&Ad, &Adinv);
-        uint64_t dl = solve_discrete_log(&Ad, &Adinv, n);
+        FXTMatrix Ad, Md, Mdinv;
+    
+        project_into_subgroup(&A, &Ad, &Md, &Mdinv, n);
+        uint64_t dl = solve_discrete_log(&Ad, &Md, &Mdinv, n);
 
         remainders[i] = InfInt(dl);
         printf("discrete log for subgroup N=%llu : %llu\n", n, dl);
@@ -141,6 +157,8 @@ int main() {
 
     Xoroshiro a = {1, 0};
     Xoroshiro b = a;
+    xNextLong(&b);
+    xNextLong(&b);
     xNextLong(&b);
 
     xoroshiro_discrete_log_test(a, b);

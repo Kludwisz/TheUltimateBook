@@ -7,37 +7,46 @@
 #include "bsgs.h"
 #include "infint.h"
 
-uint64_t solve_discrete_log(FXTMatrix *A, FXTMatrix *Ainv, uint64_t n)
+uint64_t solve_discrete_log(FXTMatrix *A, FXTMatrix *M, FXTMatrix *Minv, uint64_t n)
 {
     const uint64_t m = std::ceil(std::sqrt(n));
 
-    FXTMatrix AT, Ainv_m, Ainv_mT;
-    transposeFXTM(A, &AT);
-    fastXoroMatrixPower(Ainv, m, &Ainv_m);
-    transposeFXTM(&Ainv_m, &Ainv_mT);
+    // Solving M^k = A for k.
 
-    // You might ask what Xoroshiro is doing here, since at this point it's simply
-    // a discrete log problem between matrices. The idea here is that we can take some
-    // "test state" and store the result of its multiplication by the matrices instead
-    // of the matrices themselves. This saves us both from doing matrix multiplication
-    // AND from storing the full matrices in the LUT.
+    FXTMatrix MT, Minv_m, Minv_mT;
+    transposeFXTM(M, &MT);
+    fastXoroMatrixPower(Minv, m, &Minv_m);
+    transposeFXTM(&Minv_m, &Minv_mT);
+
     std::unordered_map<Xoroshiro, uint64_t, XoroshiroHash> baby_step;
 
-    printf("baby step states:\n");
-    Xoroshiro x0 = {1, 0};
-    for (uint64_t j = 0; j < m; j++) {
-        fastAdvanceXoroshiroFXTM(&x0, &AT);
-        printf("%016llx-%016llx\n", x0.hi, x0.lo);
-        baby_step[x0] = j;
+    //printf("baby step states:\n");
+    {
+        FXTMatrix mx[2];
+        int curr = 0;
+        makeIdentityFXTM(&(mx[0]));
+        for (uint64_t j = 0; j < m; j++) {
+            Xoroshiro x = {mx[curr].M[0][0][0], mx[curr].M[1][0][0]};
+            //printf("%016llx-%016llx\n", x.hi, x.lo);
+            baby_step[x] = j;
+            multiplyFXTM(&(mx[curr]), &MT, &(mx[curr ^ 1]));
+            curr ^= 1;
+        }
     }
 
-    printf("giant step states:\n");
-    Xoroshiro x1 = {1, 0};
-    for (uint64_t i = 0; i < m; i++) {
-        fastAdvanceXoroshiroFXTM(&x1, &Ainv_mT);
-        printf("%016llx-%016llx\n", x1.hi, x1.lo);
-        if (baby_step.find(x1) != baby_step.end()) {
-            return i * m + baby_step[x1];
+    //printf("giant step states:\n");
+    {
+        FXTMatrix mx[2];
+        int curr = 0;
+        copyFXTM(A, &(mx[0]));
+        for (uint64_t i = 0; i < m; i++) {
+            Xoroshiro x = {mx[curr].M[0][0][0], mx[curr].M[1][0][0]};
+            //printf("%016llx-%016llx\n", x.hi, x.lo);
+            if (baby_step.find(x) != baby_step.end()) {
+                return i * m + baby_step[x];
+            }
+            multiplyFXTM(&(mx[curr]), &Minv_mT, &(mx[curr ^ 1]));
+            curr ^= 1;
         }
     }
 
@@ -45,7 +54,7 @@ uint64_t solve_discrete_log(FXTMatrix *A, FXTMatrix *Ainv, uint64_t n)
 }
 
 
-void project_into_subgroup(const FXTMatrix *A, FXTMatrix *Ad, uint64_t f) {
+void project_into_subgroup(const FXTMatrix *A, FXTMatrix *Ad, FXTMatrix *Md, FXTMatrix *Mdinv, uint64_t f) {
     InfInt two64 = InfInt(1LL << 32) * InfInt(1LL << 32);
 
     InfInt bigF = InfInt(f);
@@ -56,5 +65,9 @@ void project_into_subgroup(const FXTMatrix *A, FXTMatrix *Ad, uint64_t f) {
     uint64_t hi = static_cast<uint64_t>((bigD / two64).toUnsignedLongLong());
     printf("Projection: %016llx-%016llx\n", hi, lo);
 
-    fastXoroMatrixPower128(A, hi, lo, Ad);
+    // project element
+    fastXoroMatrixPower128(A, hi, lo, Ad); 
+    // project state jump matrix & its inverse
+    fastXoroMatrixPower128(&XOROSHIRO_STANDARD_FXTM, hi, lo, Md);
+    invertFXTM(Md, Mdinv);
 }

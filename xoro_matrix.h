@@ -15,6 +15,7 @@ struct FXTMatrix {
 
 // ------------------------------------------------------------------------------------
 
+void copyFXTM(const FXTMatrix* from, FXTMatrix* to);
 void transposeFXTM(const FXTMatrix *matrix, FXTMatrix *transposed);
 void multiplyFXTM(const FXTMatrix *a, const FXTMatrix *bT, FXTMatrix *c);
 void fastXoroMatrixPower(const FXTMatrix *matrix, uint64_t power, FXTMatrix *result);
