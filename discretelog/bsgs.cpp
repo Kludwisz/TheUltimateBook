@@ -54,7 +54,6 @@ uint64_t solve_discrete_log(FXTMatrix *A, FXTMatrix *M, FXTMatrix *Minv, uint64_
     return 0;
 }
 
-
 uint64_t solve_discrete_log_fast(FXTMatrix *A, FXTMatrix *M, FXTMatrix *Minv, uint64_t n)
 {
     const uint64_t m = std::ceil(std::sqrt(n));
@@ -95,7 +94,6 @@ uint64_t solve_discrete_log_fast(FXTMatrix *A, FXTMatrix *M, FXTMatrix *Minv, ui
     return 0;
 }
 
-
 void project_into_subgroup(const FXTMatrix *A, FXTMatrix *Ad, FXTMatrix *Md, FXTMatrix *Mdinv, uint64_t f) {
     InfInt two64 = InfInt(1LL << 32) * InfInt(1LL << 32);
 
@@ -105,7 +103,7 @@ void project_into_subgroup(const FXTMatrix *A, FXTMatrix *Ad, FXTMatrix *Md, FXT
 
     uint64_t lo = static_cast<uint64_t>((bigD % two64).toUnsignedLongLong());
     uint64_t hi = static_cast<uint64_t>((bigD / two64).toUnsignedLongLong());
-    printf("Projection: %016llx-%016llx\n", hi, lo);
+    //printf("Projection: %016llx-%016llx\n", hi, lo);
 
     // project element
     fastXoroMatrixPower128(A, hi, lo, Ad); 

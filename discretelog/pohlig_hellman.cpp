@@ -1,9 +1,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
-#include "infint.h"
-#include "bsgs.h"
 
+#include "pohlig_hellman.h"
+#include "bsgs.h"
+#include "../xoro_matrix.h"
+
+// factors of 2^128 - 1
 static InfInt factors[9] = {
     InfInt(3) /*x 1*/,
     InfInt(5) /*x 1*/,
@@ -16,7 +19,7 @@ static InfInt factors[9] = {
     InfInt(67280421310721) /*x 1*/,
 };
 
-InfInt extended_gcd_128(InfInt a, InfInt b, InfInt& s_out, InfInt& t_out) {
+static InfInt extended_gcd_128(InfInt a, InfInt b, InfInt& s_out, InfInt& t_out) {
     InfInt old_r = a, r = b;
     InfInt old_s = InfInt(1), s = InfInt(0);
     InfInt old_t = InfInt(0), t = InfInt(1);
@@ -39,7 +42,7 @@ InfInt extended_gcd_128(InfInt a, InfInt b, InfInt& s_out, InfInt& t_out) {
     return old_r;
 }
 
-InfInt get_value_from_remainders(InfInt moduli[], InfInt remainders[], uint32_t num_eqns) {
+static InfInt get_value_from_remainders(InfInt moduli[], InfInt remainders[], uint32_t num_eqns) {
     for (int32_t i = num_eqns - 2; i >= 0; i--) {
         InfInt m1, m2;
         InfInt n1 = moduli[i], n2 = moduli[i+1];
@@ -69,17 +72,7 @@ void advance_infint(Xoroshiro *state, const InfInt& jump) {
     fastAdvanceXoroshiroFXTM(state, &fxtmT);
 }
 
-uint64_t reverse_bits(uint64_t val) {
-    uint64_t res = 0;
-    for (uint32_t sh = 0; sh < 64; sh++) {
-        res <<= 1;
-        res |= val & 1;
-        val >>= 1;
-    }
-    return res;
-}
-
-void xoroshiro_discrete_log_test(Xoroshiro a, Xoroshiro b) {
+InfInt xoroshiro_distance(Xoroshiro a, Xoroshiro b, bool log_progress) {
     FXTMatrix Ks, Kt, Ksinv, A;
 
     /*
@@ -122,13 +115,6 @@ void xoroshiro_discrete_log_test(Xoroshiro a, Xoroshiro b) {
         work_factors[i] = factors[i];
     }
 
-    // uint64_t n = 5;
-    // FXTMatrix Ad, Md, Mdinv;
-    // project_into_subgroup(&A, &Ad, &Md, &Mdinv, n);
-    // uint64_t dl = solve_discrete_log(&Ad, &Md, &Mdinv, n);
-    // printf("discrete log for subgroup N=%llu : %llu\n", n, dl);
-    // return;
-
     for (int i = 0; i < 9; i++) {
         uint64_t n = work_factors[i].toUnsignedLongLong();
         FXTMatrix Ad, Md, Mdinv;
@@ -137,50 +123,10 @@ void xoroshiro_discrete_log_test(Xoroshiro a, Xoroshiro b) {
         uint64_t dl = solve_discrete_log_fast(&Ad, &Md, &Mdinv, n);
 
         remainders[i] = InfInt(dl);
-        printf("discrete log for subgroup N=%llu : %llu\n", n, dl);
+        if (log_progress) {
+            fprintf(stderr, "discrete log for subgroup N=%llu : %llu\n", n, dl);
+        }
     }
-
     InfInt distance = get_value_from_remainders(work_factors, remainders, 9);
-    std::cout << "distance = " << distance << '\n' << std::flush;
-
-    {
-        Xoroshiro t = a;
-        advance_infint(&t, distance);
-        printf("--- Test result\n");
-        printf("got state (%016llx-%016llx)\n", t.hi, t.lo);
-        printf("expected  (%016llx-%016llx)\n", b.hi, b.lo);
-    }
+    return distance;
 }
-
-int main() {
-    //xoroshiro_discrete_log_test({1, 0}, {2, 0});
-
-    Xoroshiro a = {1, 0};
-    Xoroshiro b = a;
-    xNextLong(&b);
-    xNextLong(&b);
-    xNextLong(&b);
-
-    xoroshiro_discrete_log_test(a, b);
-}
-
-/*
-int main() {
-    const uint32_t num_eqns = 9;
-
-    InfInt rems[9];
-    for (int i = 0; i < 9; i++) {
-        rems[i] = InfInt(8-i);
-    }
-
-    InfInt temp_factors[9];
-    for (int i = 0; i < 9; i++) temp_factors[i] = factors[i];
-
-    InfInt val = get_value_from_remainders(temp_factors, rems, num_eqns);
-    for (int i = 0; i < num_eqns; i++) {
-        std::cout << (val % factors[i]) << '\n';
-    }
-
-    return 0;
-}
-*/
