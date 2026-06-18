@@ -49,6 +49,18 @@ conditions in the enchantWithLevels pipeline. Matching states are saved as outpu
 #include "xoro_matrix.h"
 #include "state_solver.h"
 
+#ifdef USE_WEBHOOK
+#include "discord_webhook.h"
+#else
+static void send_result(int num_enchants, std::uint64_t lo, std::uint64_t hi) {
+    std::fprintf(stdout, "%d %" PRId64 " %" PRId64 "\n", 
+        num_enchants, 
+        static_cast<std::int64_t>(lo), 
+        static_cast<std::int64_t>(hi)
+    );
+}
+#endif
+
 // Algorithm parameters
 constexpr std::uint32_t NUM_REVERSED_STATES = 8;
 constexpr std::uint32_t STATE_JUMP_SIZE = 5;
@@ -440,7 +452,7 @@ void full_check(Xoroshiro state7, std::uint32_t& full_result_counter) {
             full_result_counter++;
             std::fprintf(stderr, "GOOD SOLUTION!\n");
             std::fprintf(stderr, "%d %" PRIu64 " %" PRIu64 "\n", num_enchants, base_state.lo, base_state.hi);
-            std::fprintf(stdout, "%d %" PRIu64 " %" PRIu64 "\n", num_enchants, base_state.lo, base_state.hi);
+            send_result(num_enchants, base_state.lo, base_state.hi);
         }
         (void)xNextLong(&base_state);
     }
