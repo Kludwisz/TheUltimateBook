@@ -43,6 +43,9 @@ conditions in the enchantWithLevels pipeline. Matching states are saved as outpu
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <vector>
+#include <thread>
+#include <mutex>
 #include <unordered_set>
 
 #include "cuda_utils.cuh"
@@ -415,7 +418,8 @@ void run(std::uint64_t eqn_seed) {
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
-void full_check(Xoroshiro state7, std::uint32_t& full_result_counter) {
+std::mutex send_result_mutex;
+void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff) {
     // back 12 for the nextInt states, then back another (?) to undo the enchant_with_levels stuff
     Xoroshiro base_state = state7;
 
@@ -448,22 +452,28 @@ void full_check(Xoroshiro state7, std::uint32_t& full_result_counter) {
             max_enchants = num_enchants;
         }
 
-        if (num_enchants >= 17) {
+        if (num_enchants >= cutoff) {
             full_result_counter++;
             std::fprintf(stderr, "GOOD SOLUTION!\n");
             std::fprintf(stderr, "%d %" PRIu64 " %" PRIu64 "\n", num_enchants, base_state.lo, base_state.hi);
-            send_result(num_enchants, base_state.lo, base_state.hi);
+            {
+                std::lock_guard<std::mutex> lock(send_result_mutex);
+                send_result(num_enchants, base_state.lo, base_state.hi);
+            }
         }
         (void)xNextLong(&base_state);
     }
 
-    std::fprintf(stderr, "Candidate sol max enchants: %d\n", max_enchants);
+    if (max_enchants >= cutoff - 2) {
+        std::fprintf(stderr, "Candidate sol max enchants: %d\n", max_enchants);
+    }
 }
 
 int main(int argc, char **argv) {
     std::uint64_t start_eqn_seed = 0;
     std::uint32_t num_runs = 1;
-    std::uint32_t results_partial = 0, results_full = 0;
+    int cutoff = 18;
+    int num_gpus = 1;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--seed") == 0) {
@@ -478,43 +488,69 @@ int main(int argc, char **argv) {
                 return 1;
             }
         }
-    }
-
-    std::fprintf(stderr, "Running search, seed=%" PRIu64 ", runs=%" PRIu32 "\n", start_eqn_seed, num_runs);
-
-    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now(), t1;
-    std::uint64_t eqn_seed = start_eqn_seed;
-    std::unordered_set<Xoroshiro, XoroshiroHash> solutions;
-
-    for (int r = 0; r < num_runs; r++) {
-        run(eqn_seed);
-
-        if (r % 50 == 0) {
-            t0 = std::chrono::steady_clock::now();
-        }
-        if (r % 50 == 49) {
-            t1 = std::chrono::steady_clock::now();
-            const auto int_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-            std::fprintf(stderr, "--- run %d/%d:  %lld ms  (res: p=%" PRIu32 " f=%" PRIu32 ")\n", 
-                r+1, static_cast<int>(num_runs), int_ms, results_partial, results_full);
-        }
-
-        for (std::uint32_t i = 0; i < result_count; i++) {
-            if (solutions.find(results[i]) == solutions.end()) {
-                solutions.insert(results[i]);
-                results_partial++;
-                std::fprintf(stderr, "New candidate sol: %" PRIu64 " %" PRIu64 "\n", results[i].lo, results[i].hi);
-                Xoroshiro xr = results[i];
-                full_check(xr, results_full);
+        else if (strcmp(argv[i], "--cutoff") == 0) {
+            if (i == argc-1 || sscanf(argv[i+1], "%d", &cutoff) != 1) {
+                std::fprintf(stderr, "Illegal or unspecified cutoff.\n");
+                return 1;
             }
         }
-        //if (r % 10 == 0) {
-            Xoroshiro next;
-            xSetSeed(&next, eqn_seed);
-            eqn_seed = xNextLongJ(&next);
-        //}
-        //else {
-        //    eqn_seed += 1 + 81 + 81*81;
-        //}
+        else if (strcmp(argv[i], "--gpus") == 0) {
+            if (i == argc-1 || sscanf(argv[i+1], "%d", &num_gpus) != 1) {
+                std::fprintf(stderr, "Illegal or unspecified GPU count.\n");
+                return 1;
+            }
+        }
     }
+
+    std::fprintf(stderr, "Running search, seed=%" PRIu64 ", runs=%" PRIu32 " cutoff=%d\n", start_eqn_seed, num_runs, cutoff);
+
+    std::vector<std::thread> threads;
+
+    for (int gpu_id = 0; gpu_id < num_gpus; ++gpu_id) {
+        threads.emplace_back([gpu_id, start_eqn_seed, num_runs, cutoff]() {
+            // Each CPU thread gets its own GPU
+            cudaSetDevice(gpu_id);
+
+            std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now(), t1;
+            std::uint64_t eqn_seed = start_eqn_seed + gpu_id;
+            std::uint32_t results_partial = 0, results_full = 0;
+            std::unordered_set<Xoroshiro, XoroshiroHash> solutions;
+
+            for (int r = 0; r < num_runs; r++) {
+                run(eqn_seed);
+
+                if (r % 500 == 0) {
+                    t0 = std::chrono::steady_clock::now();
+                }
+                if (r % 500 == 499) {
+                    t1 = std::chrono::steady_clock::now();
+                    const auto int_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+                    std::fprintf(stderr, "[GPU %d] --- run %d/%d:  %lld ms  (res: p=%" PRIu32 " f=%" PRIu32 ")\n", 
+                        gpu_id, r+1, static_cast<int>(num_runs), int_ms, results_partial, results_full);
+                }
+
+                for (std::uint32_t i = 0; i < result_count; i++) {
+                    if (solutions.find(results[i]) == solutions.end()) {
+                        solutions.insert(results[i]);
+                        results_partial++;
+                        //std::fprintf(stderr, "[GPU %d] New candidate sol: %" PRIu64 " %" PRIu64 "\n", gpu_id, results[i].lo, results[i].hi);
+                        Xoroshiro xr = results[i];
+                        full_check(xr, results_full, cutoff);
+                    }
+                }
+
+                Xoroshiro next;
+                xSetSeed(&next, eqn_seed);
+                eqn_seed = xNextLongJ(&next);
+            }
+        });
+    }
+
+    for (auto& t : threads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+
+    return 0;
 }
