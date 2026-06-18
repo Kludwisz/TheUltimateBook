@@ -134,7 +134,7 @@ void xoroshiro_discrete_log_test(Xoroshiro a, Xoroshiro b) {
         FXTMatrix Ad, Md, Mdinv;
     
         project_into_subgroup(&A, &Ad, &Md, &Mdinv, n);
-        uint64_t dl = solve_discrete_log(&Ad, &Md, &Mdinv, n);
+        uint64_t dl = solve_discrete_log_fast(&Ad, &Md, &Mdinv, n);
 
         remainders[i] = InfInt(dl);
         printf("discrete log for subgroup N=%llu : %llu\n", n, dl);

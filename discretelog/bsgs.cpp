@@ -7,6 +7,7 @@
 #include "bsgs.h"
 #include "infint.h"
 
+// deprecated, use solve_discrete_log_fast instead 
 uint64_t solve_discrete_log(FXTMatrix *A, FXTMatrix *M, FXTMatrix *Minv, uint64_t n)
 {
     const uint64_t m = std::ceil(std::sqrt(n));
@@ -47,6 +48,47 @@ uint64_t solve_discrete_log(FXTMatrix *A, FXTMatrix *M, FXTMatrix *Minv, uint64_
             }
             multiplyFXTM(&(mx[curr]), &Minv_mT, &(mx[curr ^ 1]));
             curr ^= 1;
+        }
+    }
+
+    return 0;
+}
+
+
+uint64_t solve_discrete_log_fast(FXTMatrix *A, FXTMatrix *M, FXTMatrix *Minv, uint64_t n)
+{
+    const uint64_t m = std::ceil(std::sqrt(n));
+
+    // Solving M^k = A for k.
+
+    FXTMatrix MT, Minv_m, Minv_mT;
+    transposeFXTM(M, &MT);
+    fastXoroMatrixPower(Minv, m, &Minv_m);
+    transposeFXTM(&Minv_m, &Minv_mT);
+
+    std::unordered_map<Xoroshiro, uint64_t, XoroshiroHash> baby_step;
+
+    //printf("baby step states:\n");
+    {
+        Xoroshiro x = {12345, 54321};
+        for (uint64_t j = 0; j < m; j++) {
+            baby_step[x] = j;
+            fastAdvanceXoroshiroFXTM(&x, &MT);
+        }
+    }
+
+    //printf("giant step states:\n");
+    {
+        FXTMatrix AT;
+        transposeFXTM(A, &AT);
+
+        Xoroshiro x = {12345, 54321};
+        fastAdvanceXoroshiroFXTM(&x, &AT);
+        for (uint64_t i = 0; i < m; i++) {
+            if (baby_step.find(x) != baby_step.end()) {
+                return i * m + baby_step[x];
+            }
+            fastAdvanceXoroshiroFXTM(&x, &Minv_mT);
         }
     }
 
