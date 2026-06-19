@@ -370,13 +370,14 @@ void fill_mask_group(uint64_t mask_group[], uint64_t per_param_masks[], int para
 }
 
 void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
-    uint64_t per_param_masks[TOTAL_PARAM_BITS * 2];
+    uint64_t per_param_masks[128 * 2];
     
     // firstly, calculate masks for individual parameters
     for (int param_idx = 0, bit_idx = 0; param_idx < sol->parameterCount && bit_idx < 128; param_idx++) {
-        while (!(sol->isParameter[bit_idx])) {
+        while (bit_idx < 128 && !(sol->isParameter[bit_idx])) {
             bit_idx++;
         }
+        if (bit_idx >= 128) break;
         uint64_t mask_lo = 0, mask_hi = 0;
         flip_bit(&mask_lo, &mask_hi, stateBitIndexOf(bit_idx));
 
@@ -419,11 +420,16 @@ void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
 
 
 
-void setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
+bool setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
     // Generate masks & initial state
     timer_start();
     Solution *sol = generate_starting_solution(NUM_REVERSED_STATES, STATE_JUMP_SIZE*2, eqn_seed);
     timer_end("initial solution");
+
+    if (sol->parameterCount != TOTAL_PARAM_BITS) {
+        free(sol);
+        return false; 
+    }
 
     timer_start();
     getAllXoroshiroStates(sol, initialState, 1);
@@ -454,19 +460,22 @@ void setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
     CUDA_CHECK(cudaMemcpyToSymbol(BLOCK_MASKS, BLOCK_MASKS_h, N_BLOCK_MASKS * sizeof(uint64_t)));
     CUDA_CHECK(cudaMemcpyToSymbol(THREAD_MASKS, THREAD_MASKS_h, N_THREAD_MASKS * sizeof(uint64_t)));
     timer_end("data transfer");
+
+    return true;
 }
 
 void run(std::uint64_t eqn_seed, std::uint64_t& gpu_microsecs, std::uint64_t& cpu_microsecs) {
     Xoroshiro initialState;
+    bool is_valid = false;
     {
         auto t0 = std::chrono::steady_clock::now();
-        setup_search(eqn_seed, &initialState);
+        is_valid = setup_search(eqn_seed, &initialState);
         result_count = 0;
         auto t1 = std::chrono::steady_clock::now();
         cpu_microsecs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
     }
     
-    {
+    if (is_valid) {
         auto t0 = std::chrono::steady_clock::now();
         constexpr std::uint32_t N_BLOCKS = (1U << (TOTAL_PARAM_BITS - ITER_MASK_BITS)) / THREADS_PER_BLOCK;
         gaussianElimIterKernel <<< N_BLOCKS, THREADS_PER_BLOCK >>> (initialState);
@@ -477,6 +486,8 @@ void run(std::uint64_t eqn_seed, std::uint64_t& gpu_microsecs, std::uint64_t& cp
 }
 
 std::mutex send_result_mutex;
+std::unordered_set<Xoroshiro, XoroshiroHash> sols;
+
 void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff) {
     // back 12 for the nextInt states, then back another (?) to undo the enchant_with_levels stuff
     Xoroshiro base_state = state7;
@@ -511,13 +522,18 @@ void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff
         }
 
         if (num_enchants >= cutoff) {
-            full_result_counter++;
-            std::fprintf(stderr, "GOOD SOLUTION!\n");
-            std::fprintf(stderr, "%d %" PRIu64 " %" PRIu64 "\n", num_enchants, base_state.lo, base_state.hi);
-            {
-                std::lock_guard<std::mutex> lock(send_result_mutex);
-                send_result(num_enchants, base_state.lo, base_state.hi);
+            { std::lock_guard<std::mutex> lock(send_result_mutex);
+                if (sols.find(base_state) == sols.end()) {
+                    sols.insert(base_state);
+                    full_result_counter++;
+
+                    std::fprintf(stderr, "GOOD SOLUTION!\n");
+                    std::fprintf(stderr, "%d %" PRIu64 " %" PRIu64 "\n", num_enchants, base_state.lo, base_state.hi);
+                
+                    send_result(num_enchants, base_state.lo, base_state.hi);
+                }
             }
+            
         }
         (void)xNextLong(&base_state);
     }
@@ -575,17 +591,16 @@ int main(int argc, char **argv) {
             std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now(), t1;
             std::uint64_t eqn_seed = start_eqn_seed + gpu_id * 41247845213LL;
             std::uint32_t results_partial = 0, results_full = 0;
-            std::unordered_set<Xoroshiro, XoroshiroHash> solutions;
 
             std::uint64_t gpu_us = 0, cpu_us = 0;
 
             for (int r = 0; r < num_runs; r++) {
                 run(eqn_seed, gpu_us, cpu_us);
 
-                if (r % 500 == 0) {
+                if (r % 2000 == 0) {
                     t0 = std::chrono::steady_clock::now();
                 }
-                if (r % 500 == 499) {
+                if (r % 2000 == 1999) {
                     t1 = std::chrono::steady_clock::now();
                     const auto int_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
                     std::fprintf(stderr, "[GPU %d] --- run %d/%d:  gpu=%llu cpu=%llu (res: p=%" PRIu32 " f=%" PRIu32 ")\n", 
@@ -593,17 +608,13 @@ int main(int argc, char **argv) {
                 }
 
                 for (std::uint32_t i = 0; i < result_count; i++) {
-                    if (solutions.find(results[i]) == solutions.end()) {
-                        solutions.insert(results[i]);
-                        results_partial++;
-                        //std::fprintf(stderr, "[GPU %d] New candidate sol: %" PRIu64 " %" PRIu64 "\n", gpu_id, results[i].lo, results[i].hi);
-                        Xoroshiro xr = results[i];
-                        full_check(xr, results_full, cutoff);
-                    }
+                    results_partial++;
+                    Xoroshiro xr = results[i];
+                    full_check(xr, results_full, cutoff);
                 }
 
                 Xoroshiro next;
-                xSetSeed(&next, eqn_seed);
+                xSetSeed(&next, eqn_seed + gpu_id);
                 eqn_seed = xNextLongJ(&next);
             }
         });
