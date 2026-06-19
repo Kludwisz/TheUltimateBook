@@ -194,6 +194,17 @@ __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
 #define XORO_HIGH_ROTL (1)
 #define XORO_LOW (0)
 
+std::chrono::steady_clock::time_point t_start, t_end;
+void timer_start() {
+    t_start = std::chrono::steady_clock::now();
+}
+void timer_end(const char* text) {
+    t_end = std::chrono::steady_clock::now();
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(t_end - t_start).count();
+    fprintf(stderr, "%s: %lld microseconds\n", text, us);
+}
+
+
 // Equation set generator - uses the provided seed to determine the positioning
 // of the set bits in the addition columns.
 
@@ -215,6 +226,7 @@ Equation get_state_bit_equation(int stateJump, int statePart, int bitIndex, int 
 }
 
 Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t equation_seed) {
+    timer_start();
     int eq_count = num_calls * 13;
     Equation* eqns = static_cast<Equation*>(malloc(eq_count * sizeof(Equation)));
     if (eqns == NULL) return NULL;
@@ -272,10 +284,13 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
         xorEquationBy(&eq_p, &eq_r);
         eqns[eq_id++] = eq_p;
     }
+    timer_end("|-- generate equations");
 
+    timer_start();
     Solution *out = static_cast<Solution *>(malloc(sizeof(Solution)));
     gaussianElimGF2(eqns, eq_count, out);
     free(eqns);
+    timer_end("|-- solve equations");
 
     return out;
 }
@@ -380,14 +395,24 @@ void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
 }
 
 
+
 void setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
     // Generate masks & initial state
+    timer_start();
     Solution *sol = generate_starting_solution(NUM_REVERSED_STATES, STATE_JUMP_SIZE*2, eqn_seed);
+    timer_end("initial solution");
+
+    timer_start();
     getAllXoroshiroStates(sol, initialState, 1);
+    timer_end("state calc");
+
+    timer_start();
     GroupMaskSet gms;
     generate_masks_for_solution(sol, &gms);
     free(sol);
+    timer_end("mask gen");
 
+    timer_start();
     // Copy data to device and constant mem
     CUDA_CHECK(cudaMemcpyToSymbol(ITER_MASKS, gms.MASK_ITER, N_ITER_MASKS * sizeof(uint64_t)));
 
@@ -405,17 +430,27 @@ void setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
     }
     CUDA_CHECK(cudaMemcpyToSymbol(BLOCK_MASKS, BLOCK_MASKS_h, N_BLOCK_MASKS * sizeof(uint64_t)));
     CUDA_CHECK(cudaMemcpyToSymbol(THREAD_MASKS, THREAD_MASKS_h, N_THREAD_MASKS * sizeof(uint64_t)));
+    timer_end("data transfer");
 }
 
-void run(std::uint64_t eqn_seed) {
+void run(std::uint64_t eqn_seed, std::uint64_t& gpu_microsecs, std::uint64_t& cpu_microsecs) {
     Xoroshiro initialState;
-    setup_search(eqn_seed, &initialState);
+    {
+        auto t0 = std::chrono::steady_clock::now();
+        setup_search(eqn_seed, &initialState);
+        result_count = 0;
+        auto t1 = std::chrono::steady_clock::now();
+        cpu_microsecs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+    }
     
-    result_count = 0;
-
-    constexpr std::uint32_t N_BLOCKS = (1U << (TOTAL_PARAM_BITS - ITER_MASK_BITS)) / THREADS_PER_BLOCK;
-    gaussianElimIterKernel <<< N_BLOCKS, THREADS_PER_BLOCK >>> (initialState);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    {
+        auto t0 = std::chrono::steady_clock::now();
+        constexpr std::uint32_t N_BLOCKS = (1U << (TOTAL_PARAM_BITS - ITER_MASK_BITS)) / THREADS_PER_BLOCK;
+        gaussianElimIterKernel <<< N_BLOCKS, THREADS_PER_BLOCK >>> (initialState);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        auto t1 = std::chrono::steady_clock::now();
+        gpu_microsecs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+    }   
 }
 
 std::mutex send_result_mutex;
@@ -516,8 +551,10 @@ int main(int argc, char **argv) {
             std::uint32_t results_partial = 0, results_full = 0;
             std::unordered_set<Xoroshiro, XoroshiroHash> solutions;
 
+            std::uint64_t gpu_us = 0, cpu_us = 0;
+
             for (int r = 0; r < num_runs; r++) {
-                run(eqn_seed);
+                run(eqn_seed, gpu_us, cpu_us);
 
                 if (r % 500 == 0) {
                     t0 = std::chrono::steady_clock::now();
@@ -525,8 +562,8 @@ int main(int argc, char **argv) {
                 if (r % 500 == 499) {
                     t1 = std::chrono::steady_clock::now();
                     const auto int_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-                    std::fprintf(stderr, "[GPU %d] --- run %d/%d:  %lld ms  (res: p=%" PRIu32 " f=%" PRIu32 ")\n", 
-                        gpu_id, r+1, static_cast<int>(num_runs), int_ms, results_partial, results_full);
+                    std::fprintf(stderr, "[GPU %d] --- run %d/%d:  gpu=%llu cpu=%llu (res: p=%" PRIu32 " f=%" PRIu32 ")\n", 
+                        gpu_id, r+1, static_cast<int>(num_runs), gpu_us, cpu_us, results_partial, results_full);
                 }
 
                 for (std::uint32_t i = 0; i < result_count; i++) {
