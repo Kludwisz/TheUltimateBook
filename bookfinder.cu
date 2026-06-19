@@ -96,7 +96,8 @@ constexpr std::uint32_t N_BLOCK_MASKS = BLOCK_MASK_GROUPS * (1U << BLOCK_MASK_BI
 constexpr std::uint32_t N_THREAD_MASKS = THREAD_MASK_GROUPS * (1U << THREAD_MASK_BITS) * 2;
 __device__   std::uint64_t THREAD_MASKS[N_THREAD_MASKS];
 __device__   std::uint64_t BLOCK_MASKS[N_BLOCK_MASKS];
-__constant__ std::uint64_t ITER_MASKS[N_ITER_MASKS];
+//__constant__ std::uint64_t ITER_MASKS[N_ITER_MASKS];
+__device__ std::uint64_t ITER_MASKS[N_ITER_MASKS];
 
 constexpr std::uint32_t MASK_I = (1U << ITER_MASK_BITS) - 1;
 constexpr std::uint32_t MASK_T = (1U << THREAD_MASK_BITS) - 1;
@@ -208,6 +209,10 @@ void timer_end(const char* text) {
 // Equation set generator - uses the provided seed to determine the positioning
 // of the set bits in the addition columns.
 
+// We're precomputing every possible equation within our desired target range
+// as equation generation was previously the bottleneck
+static Equation PRECOMPUTED_EQNS[32][3][64][2] = {0};
+
 Equation get_state_bit_equation(int stateJump, int statePart, int bitIndex, int bitValue) {
     FXTMatrix fxtm = { 0 }, fxtmTransposed = { 0 };
     fastXoroMatrixPower(&XOROSHIRO_STANDARD_FXTM, stateJump, &fxtm);
@@ -225,8 +230,26 @@ Equation get_state_bit_equation(int stateJump, int statePart, int bitIndex, int 
     return eqn;
 }
 
+void precompute_equations() {
+    for (std::uint32_t state_jump = 0; state_jump < 32; state_jump++) {
+        for (std::uint32_t state_part = 0; state_part < 3; state_part++) {
+            for (std::uint32_t bit_index = 0; bit_index < 64; bit_index++) {
+                for (std::uint32_t bit_value = 0; bit_value < 2; bit_value++) {
+                    PRECOMPUTED_EQNS[state_jump][state_part][bit_index][bit_value]
+                            = get_state_bit_equation(state_jump, state_part, bit_index, bit_value);
+                }
+            }
+        }
+    }
+}
+
+Equation get_precomputed_equation(int stateJump, int statePart, int bitIndex, int bitValue) {
+    return PRECOMPUTED_EQNS[stateJump][statePart][bitIndex][bitValue];
+}
+
+
 Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t equation_seed) {
-    timer_start();
+    //timer_start();
     int eq_count = num_calls * 13;
     Equation* eqns = static_cast<Equation*>(malloc(eq_count * sizeof(Equation)));
     if (eqns == NULL) return NULL;
@@ -254,11 +277,11 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
         for (int i = 0; i < 5; i++, pm_id++) {
             perms_30_27[i] = permutation[pm_id];
         }
-        eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[0], 30, 0);
-        eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[1], 29, 0);
-        eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[2], 28, 0);
-        eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[3], 27, 0);
-        eqns[eq_id++] = get_state_bit_equation(c, perms_30_27[4], 26, 1);
+        eqns[eq_id++] = get_precomputed_equation(c, perms_30_27[0], 30, 0);
+        eqns[eq_id++] = get_precomputed_equation(c, perms_30_27[1], 29, 0);
+        eqns[eq_id++] = get_precomputed_equation(c, perms_30_27[2], 28, 0);
+        eqns[eq_id++] = get_precomputed_equation(c, perms_30_27[3], 27, 0);
+        eqns[eq_id++] = get_precomputed_equation(c, perms_30_27[4], 26, 1);
 
         // 5 aA pair equations for cols 30-26
         for (int bit = 30, i = 0; bit >= 26; bit--, i++) {
@@ -266,31 +289,31 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
             initEquation(&col_eq, 0, 0, 1); // note the 1 on the RHS here
             for (int p = 0; p < 3; p++) {
                 if (p == perms_30_27[i]) continue;
-                Equation other_eq = get_state_bit_equation(c, p, bit, 0);
+                Equation other_eq = get_precomputed_equation(c, p, bit, 0);
                 xorEquationBy(&col_eq, &other_eq);
             }
             eqns[eq_id++] = col_eq;
         }
 
         // col 25 has two zeros to reduce max carry - 2 equations
-        eqns[eq_id++] = get_state_bit_equation(c, XORO_LOW, 25, 0);
-        eqns[eq_id++] = get_state_bit_equation(c, XORO_LOW_ROTL, 25, 0);
+        eqns[eq_id++] = get_precomputed_equation(c, XORO_LOW, 25, 0);
+        eqns[eq_id++] = get_precomputed_equation(c, XORO_LOW_ROTL, 25, 0);
 
         // 1 pqr equation for col 31
-        Equation eq_p = get_state_bit_equation(c, XORO_LOW_ROTL, 31, 1); // also note the 1 on the RHS here
-        Equation eq_q = get_state_bit_equation(c, XORO_HIGH_ROTL, 31, 0);
-        Equation eq_r = get_state_bit_equation(c, XORO_LOW, 31, 0);
+        Equation eq_p = get_precomputed_equation(c, XORO_LOW_ROTL, 31, 1); // also note the 1 on the RHS here
+        Equation eq_q = get_precomputed_equation(c, XORO_HIGH_ROTL, 31, 0);
+        Equation eq_r = get_precomputed_equation(c, XORO_LOW, 31, 0);
         xorEquationBy(&eq_p, &eq_q);
         xorEquationBy(&eq_p, &eq_r);
         eqns[eq_id++] = eq_p;
     }
-    timer_end("|-- generate equations");
+    //timer_end("|-- generate equations");
 
-    timer_start();
+    //timer_start();
     Solution *out = static_cast<Solution *>(malloc(sizeof(Solution)));
     gaussianElimGF2(eqns, eq_count, out);
     free(eqns);
-    timer_end("|-- solve equations");
+    //timer_end("|-- solve equations");
 
     return out;
 }
@@ -536,6 +559,9 @@ int main(int argc, char **argv) {
             }
         }
     }
+
+    std::fprintf(stderr, "Precomputing equations...\n");
+    precompute_equations();
 
     std::fprintf(stderr, "Running search, seed=%" PRIu64 ", runs=%" PRIu32 " cutoff=%d\n", start_eqn_seed, num_runs, cutoff);
 
