@@ -202,7 +202,7 @@ void timer_start() {
 void timer_end(const char* text) {
     t_end = std::chrono::steady_clock::now();
     auto us = std::chrono::duration_cast<std::chrono::microseconds>(t_end - t_start).count();
-    fprintf(stderr, "%s: %lld microseconds\n", text, us);
+    //fprintf(stderr, "%s: %lld microseconds\n", text, us);
 }
 
 
@@ -573,7 +573,7 @@ int main(int argc, char **argv) {
             cudaSetDevice(gpu_id);
 
             std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now(), t1;
-            std::uint64_t eqn_seed = start_eqn_seed + gpu_id;
+            std::uint64_t eqn_seed = start_eqn_seed + gpu_id * 41247845213LL;
             std::uint32_t results_partial = 0, results_full = 0;
             std::unordered_set<Xoroshiro, XoroshiroHash> solutions;
 
