@@ -2,6 +2,7 @@
 #include <cmath>
 #include "fishing_loot.h"
 #include "../utils.h"
+#include "../xoro_matrix.h"
 static const bool DEBUG_MODE = false;
 
 
@@ -111,6 +112,28 @@ Xoroshiro get_next_state(Xoroshiro scx, int lots_level)
     return scx;
 }
 
+Xoroshiro back_to_book_roll(Xoroshiro enchant_with_levels_state)
+{
+    Xoroshiro state = enchant_with_levels_state;
+    const Xoroshiro no_result = {0,0};
+
+    FXTMatrix fxtm, fxtmT;
+    fastXoroMatrixPower128(&XOROSHIRO_STANDARD_FXTM, FULL_64, FULL_64 - 2, &fxtm);
+    transposeFXTM(&fxtm, &fxtmT);
+    fastAdvanceXoroshiroFXTM(&state, &fxtmT);
+    const Xoroshiro book_state = state;
+
+    int loot_table = xNextInt(&state, 97);
+    if (loot_table < 4 || loot_table > 14) {
+        return no_result;
+    }
+
+    int item = xNextInt(&state, 6);
+    if (state == enchant_with_levels_state && item == 4) {
+        return book_state;
+    }
+    return no_result;
+}
 
 // int main() {
 //     Xoroshiro xr;

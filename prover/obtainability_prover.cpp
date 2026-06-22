@@ -4,6 +4,7 @@
 #include "../utils.h"
 
 #include <unordered_map>
+#include <fstream>
 #include <vector>
 
 static const bool DEBUG_MODE = false;
@@ -229,19 +230,39 @@ static int test_success_rate() {
 }
 
 int main() {
-    int back_states = 500;
-    ObtainabilityProof proof;
-    Xoroshiro state = {1, 1};
-    if (get_obtainability_proof(state, proof, back_states, 50)) {
-        proof.print();
+    FILE* fptr = fopen("input.txt", "r");
+    if (fptr == NULL) {
+        std::printf("input.txt not found\n");
+        return 1;
     }
 
-    Xoroshiro test = proof.convergence_state;
-    for (int lots : proof.lots_sequence) {
-        test = get_next_state(test, lots);
-    }
+    std::int64_t lo, hi;
+    int enchants;
+    while (fscanf(fptr, "lo = %" PRId64 ", hi = %" PRId64 ", enchants = %d\n", &lo, &hi, &enchants) == 3) {
+        Xoroshiro target = {static_cast<uint64_t>(lo), static_cast<uint64_t>(hi)};
+        Xoroshiro book_state = back_to_book_roll(target);
+        Xoroshiro no_result = {0, 0};
+        if (book_state == no_result) {
+            continue;
+        }
 
-    std::printf("Proof verification:\n");
-    std::printf("Expected (%016llx-%016llx)\n", state.hi, state.lo);
-    std::printf("Got      (%016llx-%016llx)\n", test.hi, test.lo);
+        int back_states = 150;
+        ObtainabilityProof proof;
+        if (get_obtainability_proof(book_state, proof, back_states, 50)) {
+            std::printf("===== Good state - %d enchants! lo=%lld hi=%lld\n", enchants, book_state.lo, book_state.hi);
+            proof.print();
+        }
+        else {
+            continue;
+        }
+
+        Xoroshiro test = proof.convergence_state;
+        for (int lots : proof.lots_sequence) {
+            test = get_next_state(test, lots);
+        }
+
+        std::printf("Proof verification:\n");
+        std::printf("Expected (%016llx-%016llx)\n", book_state.hi, book_state.lo);
+        std::printf("Got      (%016llx-%016llx)\n\n", test.hi, test.lo);
+    }    
 }

@@ -4,5 +4,6 @@
 #include "../xoroshiro.h"
 
 Xoroshiro get_next_state(Xoroshiro scx, int lots_level);
+Xoroshiro back_to_book_roll(Xoroshiro enchant_with_levels_state);
 
 #endif

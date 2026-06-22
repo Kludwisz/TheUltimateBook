@@ -22,6 +22,6 @@ struct ObtainabilityProof {
     void print() const;
 };
 
-bool get_obtainability_proof(Xoroshiro target_state, ObtainabilityProof& proof);
+bool get_obtainability_proof(Xoroshiro target_state, ObtainabilityProof &proof, int max_offset, int fingerprint_states);
 
 #endif
