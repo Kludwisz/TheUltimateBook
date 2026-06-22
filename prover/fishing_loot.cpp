@@ -1,6 +1,8 @@
 #include <cstdint>
 #include <cmath>
 #include "fishing_loot.h"
+#include "../utils.h"
+static const bool DEBUG_MODE = true;
 
 
 // Xoroshiro with state counter
@@ -56,6 +58,7 @@ static void skip_enchant_with_levels_30(StateCountingXoroshiro *scx, Enchantable
 	scx->nextLong();
 
 	while (scx->nextInt(50) <= level) {
+        DEBUG("added enchant\n");
         nGroups--;
 		if (nGroups == 0) {
             break;
@@ -67,11 +70,13 @@ static void skip_enchant_with_levels_30(StateCountingXoroshiro *scx, Enchantable
 
 static void process_treasure(StateCountingXoroshiro *scx) 
 {
+    DEBUG("treasure\n");
     int item = scx->nextInt(6) - 2;
     if (item < 0 || item > 2) {
         return; // no extra stuff here
     }
-    skip_enchant_with_levels_30(scx, ENCHANT_WITH_LEVELS_GROUPS[item]);
+    DEBUG("enchant with levels for item %d\n", item);
+    skip_enchant_with_levels_30(scx, static_cast<EnchantableItem>(item));
 }
 
 static void process_junk(StateCountingXoroshiro *scx) 
@@ -88,7 +93,7 @@ static void process_junk(StateCountingXoroshiro *scx)
         8, 8, 8, 8, 8, // stick
         9, // ink sac
         10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-        11, 11, 11, 11, 11, 11, 11, 11, 11, 11, // rotten flesh
+        11, 11, 11, 11, 11, 11, 11, 11, 11, 11 // rotten flesh
     };
 
     int item = item_lookup[scx->nextInt(100)];
@@ -105,16 +110,17 @@ static void next_fishing_item(StateCountingXoroshiro *scx, int lots_level)
     std::uint32_t wTotal = wTreas + wJunk + wFish;
 
     int w = scx->nextInt(wTotal);
+    DEBUG("w = %d", w);
     
-    w -= wTreas;
-    if (w < 0) {
-        process_treasure(scx);
-        return;
-    }
-
     w -= wJunk;
     if (w < 0) {
         process_junk(scx);
+        return;
+    }
+
+    w -= wTreas;
+    if (w < 0) {
+        process_treasure(scx);
         return;
     }
 
@@ -126,4 +132,11 @@ StateCountingXoroshiro get_next_state(StateCountingXoroshiro scx, int lots_level
 {
     next_fishing_item(&scx, lots_level);
     return scx;
+}
+
+
+int main() {
+    StateCountingXoroshiro xr;
+    xSetFishingSeed(&xr.state, 395952196249720LL);
+    StateCountingXoroshiro xr2 = get_next_state(xr, 0);
 }
