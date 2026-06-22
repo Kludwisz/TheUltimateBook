@@ -1,8 +1,7 @@
 #pragma once
-#include "inttypes.h"
-#include "stdbool.h"
-#include "stdlib.h"
-#include "stdio.h"
+#include <cinttypes>
+#include <cstdlib>
+#include <cstdio>
 
 #define ONLY_TOP_BIT    (0x8000000000000000ULL)
 #define FULL_64         (0xffffffffffffffffULL)

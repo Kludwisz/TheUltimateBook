@@ -18,6 +18,8 @@ struct ObtainabilityProof {
     // the required sequence of luck of the sea levels
     // in consecutive fishing catches starting at convergence_state.
     std::vector<int> lots_sequence;
+
+    void print() const;
 };
 
 bool get_obtainability_proof(Xoroshiro target_state, ObtainabilityProof& proof);

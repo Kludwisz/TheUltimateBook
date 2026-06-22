@@ -2,30 +2,7 @@
 #include <cmath>
 #include "fishing_loot.h"
 #include "../utils.h"
-static const bool DEBUG_MODE = true;
-
-
-// Xoroshiro with state counter
-std::uint64_t StateCountingXoroshiro::nextLong() {
-    counter++;
-    return xNextLong(&state);
-}
-
-int StateCountingXoroshiro::nextInt(std::uint32_t n) {
-    uint64_t r = (StateCountingXoroshiro::nextLong() & 0xFFFFFFFF) * n;
-    if ((uint32_t)r < n)
-    {
-        while ((uint32_t)r < (~n + 1) % n)
-        {
-            r = (StateCountingXoroshiro::nextLong() & 0xFFFFFFFF) * n;
-        }
-    }
-    return r >> 32;
-}
-
-float StateCountingXoroshiro::nextFloat() {
-    return (StateCountingXoroshiro::nextLong() >> (64-24)) * 5.9604645E-8F;
-}
+static const bool DEBUG_MODE = false;
 
 
 // Enchant with levels utilities, code is mostly copied from
@@ -42,44 +19,44 @@ static int ENCHANT_WITH_LEVELS_GROUPS[3][60] = {
     { 0,7,7,7,7,12,12,12,12,12, 16,16,19,19,19,23,23,23,23,23, 25,25,25,25,25,28,28,28,28,28, 27,27,27,27,27,27,27 }  // book
 };
 
-static void skip_enchant_with_levels_30(StateCountingXoroshiro *scx, EnchantableItem item)
+static void skip_enchant_with_levels_30(Xoroshiro *rand, EnchantableItem item)
 {	
     const std::uint32_t enchantability = 1;
     std::int32_t level = 30;
 	const std::int32_t delta = enchantability / 4 + 1;
-	level += 1 + scx->nextInt(delta) + scx->nextInt(delta);
-	const float amplifier = (scx->nextFloat() + scx->nextFloat() - 1.0F) * 0.15F;
+	level += 1 + xNextInt(rand, delta) + xNextInt(rand, delta);
+	const float amplifier = (xNextFloat(rand) + xNextFloat(rand) - 1.0F) * 0.15F;
 	level = std::floor( ((float)level + (float)level * amplifier) + 0.5F );
 
 	std::int32_t nGroups = ENCHANT_WITH_LEVELS_GROUPS[item][level];
 	if (nGroups == 0) {
         return;
     }
-	scx->nextLong();
+	(void)xNextLong(rand);
 
-	while (scx->nextInt(50) <= level) {
+	while (xNextInt(rand, 50) <= level) {
         DEBUG("added enchant\n");
         nGroups--;
 		if (nGroups == 0) {
             break;
         }
-        scx->nextLong();
+        (void)xNextLong(rand);
 		level /= 2;
 	}
 }
 
-static void process_treasure(StateCountingXoroshiro *scx) 
+static void process_treasure(Xoroshiro *rand) 
 {
     DEBUG("treasure\n");
-    int item = scx->nextInt(6) - 2;
+    int item = xNextInt(rand, 6) - 2;
     if (item < 0 || item > 2) {
         return; // no extra stuff here
     }
     DEBUG("enchant with levels for item %d\n", item);
-    skip_enchant_with_levels_30(scx, static_cast<EnchantableItem>(item));
+    skip_enchant_with_levels_30(rand, static_cast<EnchantableItem>(item));
 }
 
-static void process_junk(StateCountingXoroshiro *scx) 
+static void process_junk(Xoroshiro *rand) 
 {
     const int item_lookup[] = {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -96,47 +73,47 @@ static void process_junk(StateCountingXoroshiro *scx)
         11, 11, 11, 11, 11, 11, 11, 11, 11, 11 // rotten flesh
     };
 
-    int item = item_lookup[scx->nextInt(100)];
+    int item = item_lookup[xNextInt(rand, 100)];
     if (item == 1 || item == 6) {
-        scx->nextFloat(); // set_damage
+        xNextFloat(rand); // set_damage
     }
 }
 
-static void next_fishing_item(StateCountingXoroshiro *scx, int lots_level) 
+static void next_fishing_item(Xoroshiro *rand, int lots_level) 
 {
     std::uint32_t wTreas = 5 + 2*lots_level;
     std::uint32_t wJunk = 10 - 2*lots_level;
     std::uint32_t wFish = 85 - lots_level;
     std::uint32_t wTotal = wTreas + wJunk + wFish;
 
-    int w = scx->nextInt(wTotal);
+    int w = xNextInt(rand, wTotal);
     DEBUG("w = %d", w);
     
     w -= wJunk;
     if (w < 0) {
-        process_junk(scx);
+        process_junk(rand);
         return;
     }
 
     w -= wTreas;
     if (w < 0) {
-        process_treasure(scx);
+        process_treasure(rand);
         return;
     }
 
     // process fish
-    scx->nextInt(100);
+    xNextInt(rand, 100);
 }
 
-StateCountingXoroshiro get_next_state(StateCountingXoroshiro scx, int lots_level)
+Xoroshiro get_next_state(Xoroshiro scx, int lots_level)
 {
     next_fishing_item(&scx, lots_level);
     return scx;
 }
 
 
-int main() {
-    StateCountingXoroshiro xr;
-    xSetFishingSeed(&xr.state, 395952196249720LL);
-    StateCountingXoroshiro xr2 = get_next_state(xr, 0);
-}
+// int main() {
+//     Xoroshiro xr;
+//     xSetFishingSeed(&xr, 395952196249720LL);
+//     Xoroshiro xr2 = get_next_state(xr, 0);
+// }
