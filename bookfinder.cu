@@ -8,16 +8,19 @@ We're targetting the following sequence of nextInt calls:
 4.  nextInt(50) <= 4
 5.  nextInt(50) <= 2
 6.  nextInt(50) <= 1
-7.  nextInt(50) == 0
-8.  nextInt(50) == 0
-...
-12. nextInt(50) == 0 <-- all
+7.  nextInt(50) == 0 <-------
+8.  nextInt(50) == 0 <--    |
+9.  nextInt(50) == 0 <--    |
+10. nextInt(50) == 0 <--    |
+11. nextInt(50) == 0 <--    |
+12. nextInt(50) == 0 <-- 8 / 13
 13. nextInt(50) == 0 <-- of these
 14. nextInt(50) == 0 <-- calls are
 15. nextInt(50) == 0 <-- partially
 16. nextInt(50) == 0 <-- reversed
-17. nextInt(50) == 0 <--
-18. nextInt(50) == 0 <--
+17. nextInt(50) == 0 <--    |
+18. nextInt(50) == 0 <--    |
+19. nextInt(50) == 0 <-------
 */
 
 /*
@@ -65,6 +68,7 @@ static void send_result(int num_enchants, std::uint64_t lo, std::uint64_t hi) {
 #endif
 
 // Algorithm parameters
+constexpr std::uint32_t NUM_ALL_ZERO_STATES = 13;
 constexpr std::uint32_t NUM_REVERSED_STATES = 8;
 constexpr std::uint32_t STATE_JUMP_SIZE = 5;
 constexpr std::uint32_t ITER_MASK_BITS = 6;
@@ -96,8 +100,8 @@ constexpr std::uint32_t N_BLOCK_MASKS = BLOCK_MASK_GROUPS * (1U << BLOCK_MASK_BI
 constexpr std::uint32_t N_THREAD_MASKS = THREAD_MASK_GROUPS * (1U << THREAD_MASK_BITS) * 2;
 __device__   std::uint64_t THREAD_MASKS[N_THREAD_MASKS];
 __device__   std::uint64_t BLOCK_MASKS[N_BLOCK_MASKS];
-//__constant__ std::uint64_t ITER_MASKS[N_ITER_MASKS];
-__device__ std::uint64_t ITER_MASKS[N_ITER_MASKS];
+__constant__ std::uint64_t ITER_MASKS[N_ITER_MASKS];
+//__device__ std::uint64_t ITER_MASKS[N_ITER_MASKS];
 
 constexpr std::uint32_t MASK_I = (1U << ITER_MASK_BITS) - 1;
 constexpr std::uint32_t MASK_T = (1U << THREAD_MASK_BITS) - 1;
@@ -117,7 +121,7 @@ __device__ __forceinline__ bool process(Xoroshiro state, uint64_t lo, uint64_t h
 
     bool next_iter = false;
     #pragma unroll
-    for (int j = 0; j < STATE_JUMP_SIZE; j++) {
+    for (int j = 0; j < NUM_ALL_ZERO_STATES; j++) {
         if (xNextIntFast(&state, 50) != 0) {
             next_iter = true;
             break; // filter
@@ -247,8 +251,31 @@ Equation get_precomputed_equation(int stateJump, int statePart, int bitIndex, in
     return PRECOMPUTED_EQNS[stateJump][statePart][bitIndex][bitValue];
 }
 
+void generate_state_seqn(int state_idxs[NUM_REVERSED_STATES], std::uint64_t eqn_seed) {
+    std::uint64_t seqn_seed = std::chrono::steady_clock::now().time_since_epoch().count() + eqn_seed;
+    Xoroshiro seqn_rng;
+    xSetSeed(&seqn_rng, seqn_seed);
 
-Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t equation_seed) {
+    bool state_taken[NUM_ALL_ZERO_STATES] = {0};
+    int count = 0;
+    while (count < NUM_REVERSED_STATES) {
+        int idx = xNextIntFast(&seqn_rng, NUM_ALL_ZERO_STATES);
+        if (state_taken[idx]) {
+            continue;
+        }
+        state_taken[idx] = true;
+        count++;
+    }
+
+    int j = 0;
+    for (int idx = 0; idx < NUM_ALL_ZERO_STATES; idx++) {
+        if (state_taken[idx]) {
+            state_idxs[j++] = idx;
+        }
+    }
+}
+
+Solution* generate_starting_solution(int num_calls, std::uint64_t equation_seed) {
     //timer_start();
     int eq_count = num_calls * 13;
     Equation* eqns = static_cast<Equation*>(malloc(eq_count * sizeof(Equation)));
@@ -260,9 +287,13 @@ Solution* generate_starting_solution(int num_calls, int state_offset, uint64_t e
         equation_seed /= 3;
     }
 
+    int state_idxs[NUM_REVERSED_STATES] = {0};
+    generate_state_seqn(state_idxs, equation_seed);
+
     int eq_id = 0;
     int pm_id = 0;
-    for (int c=state_offset, cnt=0; cnt < num_calls; cnt++, c+=2) {
+    for (int sidx = 0; sidx < NUM_REVERSED_STATES; sidx++) {
+        int c = state_idxs[sidx] * 2;
         /*
             .......31 30 29 28 27 26 25 24..............
             ........p..0..0..0..0..1..0................. LO
@@ -423,7 +454,7 @@ void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
 bool setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
     // Generate masks & initial state
     timer_start();
-    Solution *sol = generate_starting_solution(NUM_REVERSED_STATES, STATE_JUMP_SIZE*2, eqn_seed);
+    Solution *sol = generate_starting_solution(NUM_REVERSED_STATES, eqn_seed);
     timer_end("initial solution");
 
     if (sol->parameterCount != TOTAL_PARAM_BITS) {
@@ -494,11 +525,11 @@ void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff
 
     // FULL_64, FULL_64 is 0
     FXTMatrix back = {0};
-    fastXoroMatrixPower128(&XOROSHIRO_STANDARD_FXTM, FULL_64, FULL_64 - 20, &back);
+    fastXoroMatrixPower128(&XOROSHIRO_STANDARD_FXTM, FULL_64, FULL_64 - 30, &back);
     advanceXoroshiroFXTM(&base_state, &back);
 
     int max_enchants = 0;
-    for (int i = 0; i < 40; i++) {
+    for (int i = 0; i < 50; i++) {
         Xoroshiro state = base_state;
         
         const std::uint32_t enchantability = 1;
