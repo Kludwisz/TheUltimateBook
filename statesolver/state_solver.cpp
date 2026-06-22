@@ -1,8 +1,8 @@
 #include "state_solver.h"
 #include "gaussian_elim.h"
-#include "xoroshiro.h"
-#include "xoro_matrix.h"
-#include "utils.h"
+#include "../xoroshiro.h"
+#include "../xoro_matrix.h"
+#include "../utils.h"
 const bool DEBUG_MODE = false;
 
 #include "time.h"
