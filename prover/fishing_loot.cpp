@@ -28,22 +28,22 @@ float StateCountingXoroshiro::nextFloat() {
 }
 
 
-// Enchant with levels utilities
+// Enchant with levels utilities, code is mostly copied from
+// https://github.com/minecraftathome/lootinator
+// and so are the enchant with levels skip tables
 enum EnchantableItem {
     FISHING_ROD = 0,
     BOW = 1,
     BOOK = 2
 };
 static int ENCHANT_WITH_LEVELS_GROUPS[3][60] = {
-    { }, // TODO fishing rod
-    { }, // TODO bow
-    { }  // TODO book
+    { 0,1,1,1,1,2,2,2,2,2, 2,2,3,3,3,3,3,3,3,3, 5,5,5,5,5,6,6,6,6,6, 6,6,6,6,6,6,6 }, // fishing rod
+    { 0,0,0,0,0,1,1,1,1,1, 1,1,1,1,1,3,3,3,3,3, 3,3,3,3,3,5,5,5,5,5, 5,5,5,5,5,5,5 }, // bow
+    { 0,7,7,7,7,12,12,12,12,12, 16,16,19,19,19,23,23,23,23,23, 25,25,25,25,25,28,28,28,28,28, 27,27,27,27,27,27,27 }  // book
 };
 
 static void skip_enchant_with_levels_30(StateCountingXoroshiro *scx, EnchantableItem item)
-{
-    // Courtesy of https://github.com/minecraftathome/lootinator :)
-	
+{	
     const std::uint32_t enchantability = 1;
     std::int32_t level = 30;
 	const std::int32_t delta = enchantability / 4 + 1;
