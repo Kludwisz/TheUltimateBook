@@ -26,5 +26,7 @@ struct Solution {
 int stateBitIndexOf(int varIndex);
 void initEquation(Equation *eq, uint64_t lhsLo, uint64_t lhsHi, int rhs);
 void xorEquationBy(Equation *a, const Equation *b);
+void printEquation(Equation *eq);
+void printEquation(const Equation *eqn, int eq_index);
 
 int gaussianElimGF2(Equation equations[], int equationCount, Solution* sol);

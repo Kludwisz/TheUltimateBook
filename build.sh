@@ -1,0 +1,1 @@
+nvcc -Xcompiler -fopenmp -std=c++20 bookfinder.cu gaussian_elim.cpp state_solver.cpp xoro_matrix.cpp -O3 -arch=native --expt-relaxed-constexpr

@@ -2,6 +2,41 @@
 #include "utils.h"
 static const bool DEBUG_MODE = false;
 
+void printEquation(const Equation *eqn, int eq_index) {
+    int set_bits[128];
+    int count = 0;
+
+    for (int bit = 0; bit < 128; bit++) {
+        int word = bit / 64;
+        int shift = 63 - (bit % 64);
+        if (eqn->lhs[word] & (1ULL << shift)) {
+            set_bits[count++] = bit;
+        }
+    }
+
+    if (count == 0) {
+        printf("0 = %d", eqn->rhs);
+        if (eqn->rhs != 0) {
+            printf("  *** CONTRADICTION ***");
+        }
+        printf("\n");
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        int bit = set_bits[i];
+        if (bit < 64) {
+            printf("lo[%2d]", 63 - bit);       
+        } else {
+            printf("hi[%2d]", 63 - (bit - 64));
+        }
+        if (i < count - 1) {
+            printf(" ^ ");
+        }
+    }
+
+    printf(" = %d\n", eqn->rhs);
+}
 
 void initEquation(Equation *eq, uint64_t lhsLo, uint64_t lhsHi, int rhs)
 {
