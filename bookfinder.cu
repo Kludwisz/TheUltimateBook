@@ -58,12 +58,12 @@ conditions in the enchantWithLevels pipeline. Matching states are saved as outpu
 #ifdef USE_WEBHOOK
 #include "discord_webhook.h"
 #else
-static void send_result(int num_enchants, std::uint64_t lo, std::uint64_t hi, std::string credit) {
-    // std::fprintf(stdout, "%d %" PRId64 " %" PRId64 "\n", 
-        // num_enchants, 
-        // static_cast<std::int64_t>(lo), 
-        // static_cast<std::int64_t>(hi)
-    // );
+static void send_result(int num_enchants, std::uint64_t lo, std::uint64_t hi, std::string credit, int gpu_id) {
+    std::fprintf(stdout, "%d %" PRId64 " %" PRId64 "\n", 
+        num_enchants, 
+        static_cast<std::int64_t>(lo), 
+        static_cast<std::int64_t>(hi)
+    );
 }
 #endif
 
@@ -462,10 +462,10 @@ void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
     }
 }
 
-bool setup_search(std::uint64_t *eqn_seed, Batch *batch, size_t index) {
+bool setup_search(std::uint64_t eqn_seed, Batch *batch, size_t index) {
     // Generate masks & initial state
     timer_start();
-    Solution *sol = generate_starting_solution(NUM_REVERSED_STATES, *eqn_seed);
+    Solution *sol = generate_starting_solution(NUM_REVERSED_STATES, eqn_seed);
     timer_end("initial solution");
 
     if (sol->parameterCount != TOTAL_PARAM_BITS) {
@@ -506,6 +506,9 @@ bool setup_search(std::uint64_t *eqn_seed, Batch *batch, size_t index) {
     return true;
 }
 
+
+int gen_threads = 1;
+
 void generate_batch(Batch *h_batch, uint64_t *eqn_seed) {
     uint64_t seeds[RUNS_PER_BATCH];
     seeds[0] = *eqn_seed;
@@ -517,27 +520,20 @@ void generate_batch(Batch *h_batch, uint64_t *eqn_seed) {
         // printf("%lu\n", seeds[i]);
     }
 
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < RUNS_PER_BATCH; i++) {
-        bool valid = setup_search(eqn_seed, h_batch, i);
-
-        Xoroshiro next;
-        xSetSeed(&next, *eqn_seed);
-        *eqn_seed = xNextLongJ(&next);
+    const int per_thread_total = RUNS_PER_BATCH / gen_threads;
+    std::vector<std::thread> threads;
+    for (int th = 0; th < gen_threads; th++) {
+        threads.emplace_back([th, per_thread_total, seeds, h_batch]() {
+            for (int offset = th*per_thread_total; offset < (th+1)*per_thread_total; offset++) {
+                bool valid = setup_search(seeds[offset], h_batch, offset);
+            }
+        });
     }
-    *eqn_seed = seeds[RUNS_PER_BATCH - 1];
-
-    // Xoroshiro next;
-    // xSetSeed(&next, *eqn_seed);
-    // *eqn_seed = xNextLongJ(&next);
-
-    // for (size_t i = 0; i < RUNS_PER_BATCH; i++) {
-    //     bool valid = setup_search(eqn_seed, h_batch, i);
-
-    //     Xoroshiro next;
-    //     xSetSeed(&next, *eqn_seed);
-    //     *eqn_seed = xNextLongJ(&next);
-    // }
+    for (auto& t : threads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
 }
 
 #include <chrono>
@@ -550,7 +546,7 @@ uint64_t run(std::uint64_t eqn_seed, Batch *d_batch, Batch *h_batch) {
     cudaMemcpy(d_batch, h_batch, sizeof(Batch), cudaMemcpyHostToDevice);
     auto end = std::chrono::steady_clock::now();
 
-    std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(end - start) << "\n";
+    std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "\n";
     // auto start = std::chrono::steady_clock::now();
     constexpr std::uint32_t N_BLOCKS = (1U << (TOTAL_PARAM_BITS - ITER_MASK_BITS)) / THREADS_PER_BLOCK;
     dim3 block(N_BLOCKS, RUNS_PER_BATCH);
@@ -564,7 +560,7 @@ uint64_t run(std::uint64_t eqn_seed, Batch *d_batch, Batch *h_batch) {
 std::mutex send_result_mutex;
 std::unordered_set<Xoroshiro, XoroshiroHash> sols;
 
-void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff, std::string credit) {
+void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff, std::string credit, int gpu) {
     // back 12 for the nextInt states, then back another (?) to undo the enchant_with_levels stuff
     Xoroshiro base_state = state7;
 
@@ -603,10 +599,10 @@ void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff
                     sols.insert(base_state);
                     full_result_counter++;
 
-                    std::fprintf(stderr, "GOOD SOLUTION!\n");
-                    std::fprintf(stderr, "%d %" PRIu64 " %" PRIu64 "\n", num_enchants, base_state.lo, base_state.hi);
+                    //std::fprintf(stderr, "GOOD SOLUTION!\n");
+                    //std::fprintf(stderr, "%d %" PRIu64 " %" PRIu64 "\n", num_enchants, base_state.lo, base_state.hi);
                 
-                    send_result(num_enchants, base_state.lo, base_state.hi, credit);
+                    send_result(num_enchants, base_state.lo, base_state.hi, credit, gpu);
                 }
             }
             
@@ -622,16 +618,10 @@ void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff
 int main(int argc, char **argv) {
     std::int32_t num_runs = 1;
     int cutoff = 18;
-    int gpu_id = 0;
+    int gpus = 1;
     std::string credit = "nobody";
 
     for (int i = 1; i < argc; i++) {
-        // if (strcmp(argv[i], "--seed") == 0) {
-        //     if (i == argc-1 || sscanf(argv[i+1], "%" PRIu64, &start_eqn_seed) != 1) {
-        //         std::fprintf(stderr, "Illegal or unspecified starting seed.\n");
-        //         return 1;
-        //     }
-        // }
         if (strcmp(argv[i], "--runs") == 0) {
             if (i == argc-1 || sscanf(argv[i+1], "%" PRIu32, &num_runs) != 1) {
                 std::fprintf(stderr, "Illegal or unspecified run count.\n");
@@ -647,20 +637,25 @@ int main(int argc, char **argv) {
                 return 1;
             }
         }
-        else if (strcmp(argv[i], "--device") == 0) {
-            if (i == argc-1 || sscanf(argv[i+1], "%d", &gpu_id) != 1) {
+        else if (strcmp(argv[i], "--gpus") == 0) {
+            if (i == argc-1 || sscanf(argv[i+1], "%d", &gpus) != 1) {
+                std::fprintf(stderr, "Illegal or unspecified GPU count.\n");
+                return 1;
+            }
+        }
+        else if (strcmp(argv[i], "--genthreads") == 0) {
+            if (i == argc-1 || sscanf(argv[i+1], "%d", &gen_threads) != 1) {
                 std::fprintf(stderr, "Illegal or unspecified GPU count.\n");
                 return 1;
             }
         }
     }
 
-    std::uint64_t start_eqn_seed = gpu_id * 34823478623ull + time(0);
 
     std::fprintf(stderr, "Precomputing equations...\n");
     precompute_equations();
 
-    std::fprintf(stderr, "Running search, seed=%" PRIu64 ", runs=%" PRIu32 " cutoff=%d\n", start_eqn_seed, num_runs, cutoff);
+    std::fprintf(stderr, "Running search, runs=%" PRIu32 " cutoff=%d\n", num_runs, cutoff);
 
     std::vector<std::thread> threads;
 
@@ -670,7 +665,9 @@ int main(int argc, char **argv) {
     Batch *h_batch;
     cudaHostAlloc(&h_batch, sizeof(Batch), 0);
 
+    for (int gpu_id = 0; gpu_id < gpus; gpu_id++)
     {
+        std::uint64_t start_eqn_seed = gpu_id * 34823478623ull + time(0);
         // Each CPU thread gets its own GPU
         cudaSetDevice(gpu_id);
 
@@ -698,7 +695,7 @@ int main(int argc, char **argv) {
             for (std::uint32_t i = 0; i < result_count; i++) {
                 results_partial++;
                 Xoroshiro xr = results[i];
-                full_check(xr, results_full, cutoff, credit);
+                full_check(xr, results_full, cutoff, credit, gpu_id);
             }
         }
 
@@ -708,7 +705,7 @@ int main(int argc, char **argv) {
         for (std::uint32_t i = 0; i < result_count; i++) {
             results_partial++;
             Xoroshiro xr = results[i];
-            full_check(xr, results_full, cutoff, credit);
+            full_check(xr, results_full, cutoff, credit, gpu_id);
         }
     };
 

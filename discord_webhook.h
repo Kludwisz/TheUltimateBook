@@ -4,7 +4,7 @@
 #include <curl/curl.h>
 #include <string>
 
-inline void send_result(int num_enchants, uint64_t lo, uint64_t hi, std::string credit) {
+inline void send_result(int num_enchants, uint64_t lo, uint64_t hi, std::string credit, int gpu_id) {
     const std::string webhook =
         "https://discord.com/api/webhooks/1517214908410892398/YLdVmseUJn2ItFpfeb9r4VeRy_gd3tlTWeMSB6vrZnWt9wkdf7Iq9AXIVt0dwAwNU7Wx";
 
@@ -13,7 +13,7 @@ inline void send_result(int num_enchants, uint64_t lo, uint64_t hi, std::string 
 
     const std::string json = 
         R"({"content":"lo = )" + std::to_string(slo) + ", hi = " 
-        + std::to_string(shi) + ", enchants = " + std::to_string(num_enchants) + " found by: " + credit + R"("})";
+        + std::to_string(shi) + ", enchants = " + std::to_string(num_enchants) + " found by: " + credit + " (gpu #" + std::to_string(gpu_id) + ") " + R"("})";
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
