@@ -58,7 +58,7 @@ conditions in the enchantWithLevels pipeline. Matching states are saved as outpu
 #ifdef USE_WEBHOOK
 #include "discord_webhook.h"
 #else
-static void send_result(int num_enchants, std::uint64_t lo, std::uint64_t hi) {
+static void send_result(int num_enchants, std::uint64_t lo, std::uint64_t hi, std::string credit) {
     // std::fprintf(stdout, "%d %" PRId64 " %" PRId64 "\n", 
         // num_enchants, 
         // static_cast<std::int64_t>(lo), 
@@ -564,7 +564,7 @@ uint64_t run(std::uint64_t eqn_seed, Batch *d_batch, Batch *h_batch) {
 std::mutex send_result_mutex;
 std::unordered_set<Xoroshiro, XoroshiroHash> sols;
 
-void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff) {
+void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff, std::string credit) {
     // back 12 for the nextInt states, then back another (?) to undo the enchant_with_levels stuff
     Xoroshiro base_state = state7;
 
@@ -606,7 +606,7 @@ void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff
                     std::fprintf(stderr, "GOOD SOLUTION!\n");
                     std::fprintf(stderr, "%d %" PRIu64 " %" PRIu64 "\n", num_enchants, base_state.lo, base_state.hi);
                 
-                    send_result(num_enchants, base_state.lo, base_state.hi);
+                    send_result(num_enchants, base_state.lo, base_state.hi, credit);
                 }
             }
             
@@ -623,6 +623,7 @@ int main(int argc, char **argv) {
     std::int32_t num_runs = 1;
     int cutoff = 18;
     int gpu_id = 0;
+    std::string credit = "nobody";
 
     for (int i = 1; i < argc; i++) {
         // if (strcmp(argv[i], "--seed") == 0) {
@@ -636,6 +637,9 @@ int main(int argc, char **argv) {
                 std::fprintf(stderr, "Illegal or unspecified run count.\n");
                 return 1;
             }
+        }
+        else if (strcmp(argv[i], "--credit") == 0) {
+            credit = argv[i + 1];
         }
         else if (strcmp(argv[i], "--cutoff") == 0) {
             if (i == argc-1 || sscanf(argv[i+1], "%d", &cutoff) != 1) {
@@ -694,7 +698,7 @@ int main(int argc, char **argv) {
             for (std::uint32_t i = 0; i < result_count; i++) {
                 results_partial++;
                 Xoroshiro xr = results[i];
-                full_check(xr, results_full, cutoff);
+                full_check(xr, results_full, cutoff, credit);
             }
         }
 
@@ -704,7 +708,7 @@ int main(int argc, char **argv) {
         for (std::uint32_t i = 0; i < result_count; i++) {
             results_partial++;
             Xoroshiro xr = results[i];
-            full_check(xr, results_full, cutoff);
+            full_check(xr, results_full, cutoff, credit);
         }
     };
 
