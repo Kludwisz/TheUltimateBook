@@ -59,7 +59,7 @@ conditions in the enchantWithLevels pipeline. Matching states are saved as outpu
 #include "discord_webhook.h"
 #else
 static void send_result(int num_enchants, std::uint64_t lo, std::uint64_t hi, std::string credit, int gpu_id) {
-    std::fprintf(stdout, "%d %" PRId64 " %" PRId64 "\n", 
+    std::fprintf(stderr, "%d %" PRId64 " %" PRId64 "\n", 
         num_enchants, 
         static_cast<std::int64_t>(lo), 
         static_cast<std::int64_t>(hi)
@@ -178,9 +178,9 @@ __global__ void gaussianElimIterKernel(Batch *__restrict__ d_batch) {
     // #pragma unroll
     for (int iterIndex = 0; iterIndex <= MASK_I >> 1; iterIndex++) {
         #ifdef OLD_CUDA
-            #define ulonglong4_16a ulonglong4
+            #define ulonglong4_a16 ulonglong4
         #endif
-        const ulonglong4_16a data = reinterpret_cast<const ulonglong4_16a *>(ITER_MASKS)[iterIndex];
+        const ulonglong4_a16 data = reinterpret_cast<const ulonglong4_a16 *>(ITER_MASKS)[iterIndex];
         if (process(initialState, data.x, data.y)) {   // got a partial result
             Xoroshiro out = initialState;
             out.lo ^= data.x;
@@ -265,7 +265,7 @@ Equation get_precomputed_equation(int stateJump, int statePart, int bitIndex, in
 }
 
 void generate_state_seqn(int state_idxs[NUM_REVERSED_STATES], std::uint64_t eqn_seed) {
-    std::uint64_t seqn_seed = 69420ull; //std::chrono::steady_clock::now().time_since_epoch().count() + eqn_seed;
+    std::uint64_t seqn_seed = std::chrono::steady_clock::now().time_since_epoch().count() + eqn_seed;
     Xoroshiro seqn_rng;
     xSetSeed(&seqn_rng, seqn_seed);
 
@@ -468,11 +468,10 @@ bool setup_search(std::uint64_t eqn_seed, Batch *batch, size_t index) {
     Solution *sol = generate_starting_solution(NUM_REVERSED_STATES, eqn_seed);
     timer_end("initial solution");
 
-    if (sol->parameterCount != TOTAL_PARAM_BITS) {
-        free(sol);
-        exit(1);
-        return false; 
-    }
+    //if (sol->parameterCount != TOTAL_PARAM_BITS) {
+    //    free(sol);
+    //    return false; 
+    //}
 
     getAllXoroshiroStates(sol, &batch->states[index], 1);
 
@@ -524,8 +523,9 @@ void generate_batch(Batch *h_batch, uint64_t *eqn_seed) {
     std::vector<std::thread> threads;
     for (int th = 0; th < gen_threads; th++) {
         threads.emplace_back([th, per_thread_total, seeds, h_batch]() {
+            //std::fprintf(stderr, "thread %d %d   %d to %d\n", th, per_thread_total, th*per_thread_total, (th+1)*per_thread_total);
             for (int offset = th*per_thread_total; offset < (th+1)*per_thread_total; offset++) {
-                bool valid = setup_search(seeds[offset], h_batch, offset);
+                (void)setup_search(seeds[offset], h_batch, offset);
             }
         });
     }
@@ -534,6 +534,8 @@ void generate_batch(Batch *h_batch, uint64_t *eqn_seed) {
             t.join();
         }
     }
+
+    *eqn_seed = seeds[RUNS_PER_BATCH - 1];
 }
 
 #include <chrono>
@@ -552,7 +554,6 @@ uint64_t run(std::uint64_t eqn_seed, Batch *d_batch, Batch *h_batch) {
     dim3 block(N_BLOCKS, RUNS_PER_BATCH);
     gaussianElimIterKernel<<<block, THREADS_PER_BLOCK >>>(d_batch);
     CUDA_CHECK(cudaDeviceSynchronize());
-
 
     return eqn_seed;
 }
@@ -659,55 +660,60 @@ int main(int argc, char **argv) {
 
     std::vector<std::thread> threads;
 
-    Batch *d_batch;
-    cudaMalloc(&d_batch, sizeof(Batch));
+    for (int gpu_id = 0; gpu_id < gpus; gpu_id++) {
+        threads.emplace_back([gpu_id, num_runs, cutoff, credit]() {
+            std::uint64_t start_eqn_seed = gpu_id * 34823478623ull + time(0);
+            // Each CPU thread gets its own GPU
+            cudaSetDevice(gpu_id);
 
-    Batch *h_batch;
-    cudaHostAlloc(&h_batch, sizeof(Batch), 0);
+            Batch *d_batch;
+            cudaMalloc(&d_batch, sizeof(Batch));
+            Batch *h_batch;
+            cudaHostAlloc(&h_batch, sizeof(Batch), 0);
 
-    for (int gpu_id = 0; gpu_id < gpus; gpu_id++)
-    {
-        std::uint64_t start_eqn_seed = gpu_id * 34823478623ull + time(0);
-        // Each CPU thread gets its own GPU
-        cudaSetDevice(gpu_id);
+            std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now(), t1;
+            std::uint64_t eqn_seed = start_eqn_seed;
+            std::uint32_t results_partial = 0, results_full = 0;
 
-        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now(), t1;
-        std::uint64_t eqn_seed = start_eqn_seed;
-        std::uint32_t results_partial = 0, results_full = 0;
-
-        std::uint64_t gpu_us = 0, cpu_us = 0;
-
-        generate_batch(h_batch, &eqn_seed);
-        cudaMemcpy(d_batch, h_batch, sizeof(Batch), cudaMemcpyHostToDevice);
-    
-        constexpr std::uint32_t N_BLOCKS = (1U << (TOTAL_PARAM_BITS - ITER_MASK_BITS)) / THREADS_PER_BLOCK;
-        dim3 grid(N_BLOCKS, RUNS_PER_BATCH);
-
-        for (int r = 0; r < num_runs - RUNS_PER_BATCH; r += RUNS_PER_BATCH) {
-            result_count = 0;
-
-            gaussianElimIterKernel<<<grid, THREADS_PER_BLOCK >>>(d_batch);
             generate_batch(h_batch, &eqn_seed);
-            
-            cudaDeviceSynchronize();
             cudaMemcpy(d_batch, h_batch, sizeof(Batch), cudaMemcpyHostToDevice);
+        
+            constexpr std::uint32_t N_BLOCKS = (1U << (TOTAL_PARAM_BITS - ITER_MASK_BITS)) / THREADS_PER_BLOCK;
+            dim3 grid(N_BLOCKS, RUNS_PER_BATCH);
+
+            for (int r = 0; r < num_runs - RUNS_PER_BATCH; r += RUNS_PER_BATCH) {
+                result_count = 0;
+
+                gaussianElimIterKernel<<<grid, THREADS_PER_BLOCK >>>(d_batch);
+                generate_batch(h_batch, &eqn_seed);
+                
+                cudaDeviceSynchronize();
+                cudaMemcpy(d_batch, h_batch, sizeof(Batch), cudaMemcpyHostToDevice);
+
+                for (std::uint32_t i = 0; i < result_count; i++) {
+                    results_partial++;
+                    Xoroshiro xr = results[i];
+                    full_check(xr, results_full, cutoff, credit, gpu_id);
+                }
+            }
+
+            result_count = 0;
+            gaussianElimIterKernel<<<grid, THREADS_PER_BLOCK >>>(d_batch);
+            cudaDeviceSynchronize();
 
             for (std::uint32_t i = 0; i < result_count; i++) {
                 results_partial++;
                 Xoroshiro xr = results[i];
                 full_check(xr, results_full, cutoff, credit, gpu_id);
             }
-        }
-
-        gaussianElimIterKernel<<<grid, THREADS_PER_BLOCK >>>(d_batch);
-        cudaDeviceSynchronize();
-
-        for (std::uint32_t i = 0; i < result_count; i++) {
-            results_partial++;
-            Xoroshiro xr = results[i];
-            full_check(xr, results_full, cutoff, credit, gpu_id);
-        }
+        });
     };
+
+    for (auto& t : threads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
 
     return 0;
 }
