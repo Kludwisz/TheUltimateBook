@@ -681,13 +681,18 @@ int main(int argc, char **argv) {
             constexpr std::uint32_t N_BLOCKS = (1U << (TOTAL_PARAM_BITS - ITER_MASK_BITS)) / THREADS_PER_BLOCK;
             dim3 grid(N_BLOCKS, RUNS_PER_BATCH);
 
+            std::uint64_t cputime = 0, gputime = 0;
             for (int r = 0; r < num_runs - RUNS_PER_BATCH; r += RUNS_PER_BATCH) {
                 result_count = 0;
 
                 gaussianElimIterKernel<<<grid, THREADS_PER_BLOCK >>>(d_batch);
                 generate_batch(h_batch, &eqn_seed);
                 
+                auto t0 = std::chrono::steady_clock::now();
                 cudaDeviceSynchronize();
+                auto t1 = std::chrono::steady_clock::now();
+                auto int_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+                gputime += int_ms;
                 cudaMemcpy(d_batch, h_batch, sizeof(Batch), cudaMemcpyHostToDevice);
 
                 for (std::uint32_t i = 0; i < result_count; i++) {
@@ -695,6 +700,8 @@ int main(int argc, char **argv) {
                     Xoroshiro xr = results[i];
                     full_check(xr, results_full, cutoff, credit, gpu_id);
                 }
+
+                std::fprintf(stderr, "==== (gpu #%d) gpu wait time = %ld ms  (p=%u)\n", gpu_id, gputime, results_partial);
             }
 
             result_count = 0;
