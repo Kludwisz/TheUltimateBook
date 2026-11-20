@@ -58,7 +58,6 @@ conditions in the enchantWithLevels pipeline. Matching states are saved as outpu
 
 #ifdef USE_WEBHOOK
 #include "discord_webhook.h"
-#include "bookfinder.h"
 #else
 static void send_result(int num_enchants, std::uint64_t lo, std::uint64_t hi) {
     std::fprintf(stdout, "%d %" PRId64 " %" PRId64 "\n", 
@@ -87,7 +86,7 @@ constexpr std::uint32_t THREADS_PER_BLOCK = 256;
 constexpr std::uint32_t TOTAL_PARAM_BITS = ITER_MASK_BITS 
         + THREAD_MASK_BITS * THREAD_MASK_GROUPS 
         + BLOCK_MASK_BITS * BLOCK_MASK_GROUPS;
-constexpr std::uint32_t EXPECTED_PARAM_BITS = 128 - 12 * NUM_REVERSED_STATES;
+constexpr std::uint32_t EXPECTED_PARAM_BITS = 128 - NUM_BIT_EQUATIONS * NUM_REVERSED_STATES;
 
 static_assert(TOTAL_PARAM_BITS == EXPECTED_PARAM_BITS, "Invalid total parameter bits, review the input data.");
 static_assert(THREADS_PER_BLOCK == (1U << (THREAD_MASK_BITS * THREAD_MASK_GROUPS)), "The thread mask size must match THREADS_PER_BLOCK.");
@@ -254,9 +253,9 @@ Equation get_precomputed_equation(int stateJump, int statePart, int bitIndex, in
     return PRECOMPUTED_EQNS[stateJump][statePart][bitIndex][bitValue];
 }
 
-void xorEquationByPermutedBit(int bit_permutations[6], int perm_idx, int c, int bit, Equation &col_eq) {
+void xorEquationByPermutedBit(int special_part, bool avoid, int c, int bit, Equation &col_eq) {
     for (int p = 0; p < 3; p++) {
-        if (p == bit_permutations[perm_idx]) {
+        if ((p == special_part) == avoid) {
             continue;
         }
         Equation other_eq = get_precomputed_equation(c, p, bit, 0);
@@ -330,15 +329,15 @@ Solution* generate_starting_solution(int num_calls, std::uint64_t equation_seed)
         for (int bit = 30, i = 0; bit >= 25; bit--, i++) {
             Equation col_eq;
             initEquation(&col_eq, 0, 0, 1); // note the 1 on the RHS here
-            xorEquationByPermutedBit(bit_permutations, i, c, bit, col_eq);
+            xorEquationByPermutedBit(bit_permutations[i], true, c, bit, col_eq);
             eqns[eq_id++] = col_eq;
         }
 
         // the gG equation
         Equation eq_gG;
         initEquation(&eq_gG, 0, 0, 1);
-        xorEquationByPermutedBit(bit_permutations, 4, c, 26, eq_gG);
-        xorEquationByPermutedBit(bit_permutations, 5, c, 25, eq_gG);
+        xorEquationByPermutedBit(bit_permutations[4], false, c, 26, eq_gG);
+        xorEquationByPermutedBit(bit_permutations[4], false, c, 25, eq_gG);
         eqns[eq_id++] = eq_gG;
 
         // 1 pqr equation for col 31
@@ -467,6 +466,7 @@ bool setup_search(std::uint64_t eqn_seed, Xoroshiro *initialState) {
 
     if (sol->parameterCount != TOTAL_PARAM_BITS) {
         free(sol);
+        std::printf("hello, %d params and solution is ok=%d\n", sol->parameterCount, sol->isContradictory);
         return false; 
     }
 
