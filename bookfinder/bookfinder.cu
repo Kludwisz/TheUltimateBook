@@ -13,14 +13,15 @@ We're targetting the following sequence of nextInt calls:
 9.  nextInt(50) == 0 <--    |
 10. nextInt(50) == 0 <--    |
 11. nextInt(50) == 0 <--    |
-12. nextInt(50) == 0 <-- 8 / 13
+12. nextInt(50) == 0 <-- 8 / 14
 13. nextInt(50) == 0 <-- of these
 14. nextInt(50) == 0 <-- calls are
 15. nextInt(50) == 0 <-- partially
 16. nextInt(50) == 0 <-- reversed
 17. nextInt(50) == 0 <--    |
 18. nextInt(50) == 0 <--    |
-19. nextInt(50) == 0 <-------
+19. nextInt(50) == 0 <--    |
+20. nextInt(50) == 0 <-------
 */
 
 /*
@@ -57,6 +58,7 @@ conditions in the enchantWithLevels pipeline. Matching states are saved as outpu
 
 #ifdef USE_WEBHOOK
 #include "discord_webhook.h"
+#include "bookfinder.h"
 #else
 static void send_result(int num_enchants, std::uint64_t lo, std::uint64_t hi) {
     std::fprintf(stdout, "%d %" PRId64 " %" PRId64 "\n", 
@@ -68,14 +70,15 @@ static void send_result(int num_enchants, std::uint64_t lo, std::uint64_t hi) {
 #endif
 
 // Algorithm parameters
-constexpr std::uint32_t NUM_ALL_ZERO_STATES = 13;
+constexpr std::uint32_t NUM_BIT_EQUATIONS = 12;
+constexpr std::uint32_t NUM_ALL_ZERO_STATES = 14;
 constexpr std::uint32_t NUM_REVERSED_STATES = 8;
 constexpr std::uint32_t STATE_JUMP_SIZE = 5;
 constexpr std::uint32_t ITER_MASK_BITS = 6;
 constexpr std::uint32_t THREAD_MASK_BITS = 4;
 constexpr std::uint32_t THREAD_MASK_GROUPS = 2;
-constexpr std::uint32_t BLOCK_MASK_BITS = 2;
-constexpr std::uint32_t BLOCK_MASK_GROUPS = 5;
+constexpr std::uint32_t BLOCK_MASK_BITS = 3;
+constexpr std::uint32_t BLOCK_MASK_GROUPS = 6;
 
 constexpr std::uint32_t THREADS_PER_BLOCK = 256;
 
@@ -84,7 +87,7 @@ constexpr std::uint32_t THREADS_PER_BLOCK = 256;
 constexpr std::uint32_t TOTAL_PARAM_BITS = ITER_MASK_BITS 
         + THREAD_MASK_BITS * THREAD_MASK_GROUPS 
         + BLOCK_MASK_BITS * BLOCK_MASK_GROUPS;
-constexpr std::uint32_t EXPECTED_PARAM_BITS = 128 - 13 * NUM_REVERSED_STATES;
+constexpr std::uint32_t EXPECTED_PARAM_BITS = 128 - 12 * NUM_REVERSED_STATES;
 
 static_assert(TOTAL_PARAM_BITS == EXPECTED_PARAM_BITS, "Invalid total parameter bits, review the input data.");
 static_assert(THREADS_PER_BLOCK == (1U << (THREAD_MASK_BITS * THREAD_MASK_GROUPS)), "The thread mask size must match THREADS_PER_BLOCK.");
@@ -157,13 +160,13 @@ __global__ void gaussianElimIterKernel(Xoroshiro initialState) {
 
         initialState.lo ^= data.x;
         initialState.hi ^= data.y;
-        bid >>= 2;
+        bid >>= BLOCK_MASK_BITS;
     }
 
     // We have the initial state. Now all remaining state jump operations will be
     // handled using fully precomputed mask values stored in __constant__ memory. 
     #pragma unroll
-    for (int iterIndex = 0; iterIndex <= MASK_I >> 1; iterIndex++) {
+    for (int iterIndex = 0; iterIndex <= (MASK_I >> 1); iterIndex++) {
         #ifdef OLD_CUDA
             #define ulonglong4_a16 ulonglong4
         #endif
@@ -251,6 +254,16 @@ Equation get_precomputed_equation(int stateJump, int statePart, int bitIndex, in
     return PRECOMPUTED_EQNS[stateJump][statePart][bitIndex][bitValue];
 }
 
+void xorEquationByPermutedBit(int bit_permutations[6], int perm_idx, int c, int bit, Equation &col_eq) {
+    for (int p = 0; p < 3; p++) {
+        if (p == bit_permutations[perm_idx]) {
+            continue;
+        }
+        Equation other_eq = get_precomputed_equation(c, p, bit, 0);
+        xorEquationBy(&col_eq, &other_eq);
+    }
+}
+
 void generate_state_seqn(int state_idxs[NUM_REVERSED_STATES], std::uint64_t eqn_seed) {
     std::uint64_t seqn_seed = std::chrono::steady_clock::now().time_since_epoch().count() + eqn_seed;
     Xoroshiro seqn_rng;
@@ -277,7 +290,7 @@ void generate_state_seqn(int state_idxs[NUM_REVERSED_STATES], std::uint64_t eqn_
 
 Solution* generate_starting_solution(int num_calls, std::uint64_t equation_seed) {
     //timer_start();
-    int eq_count = num_calls * 13;
+    int eq_count = num_calls * NUM_BIT_EQUATIONS;
     Equation* eqns = static_cast<Equation*>(malloc(eq_count * sizeof(Equation)));
     if (eqns == NULL) return NULL;
 
@@ -296,39 +309,37 @@ Solution* generate_starting_solution(int num_calls, std::uint64_t equation_seed)
         int c = state_idxs[sidx] * 2;
         /*
             .......31 30 29 28 27 26 25 24..............
-            ........p..0..0..0..0..1..0................. LO
-            ........q..a..b..c..d..e..0................. ROTL17(LO)
-        +   ........r..A..B..C..D..E.................... ROTL17(HI)
+            ........p..0..0..0..0..g..G................. LO
+            ........q..a..b..c..d..e..f................. ROTL17(LO)
+        +   ........r..A..B..C..D..E..F................. ROTL17(HI)
         -------------------------------------------------
             ........0..0..0..0..0.......................
         */
 
         // 5 fixed-bit equations for cols 30-26 with permutations
-        int perms_30_27[5];
-        for (int i = 0; i < 5; i++, pm_id++) {
-            perms_30_27[i] = permutation[pm_id];
+        int bit_permutations[6];
+        for (int i = 0; i < 6; i++, pm_id++) {
+            bit_permutations[i] = permutation[pm_id];
         }
-        eqns[eq_id++] = get_precomputed_equation(c, perms_30_27[0], 30, 0);
-        eqns[eq_id++] = get_precomputed_equation(c, perms_30_27[1], 29, 0);
-        eqns[eq_id++] = get_precomputed_equation(c, perms_30_27[2], 28, 0);
-        eqns[eq_id++] = get_precomputed_equation(c, perms_30_27[3], 27, 0);
-        eqns[eq_id++] = get_precomputed_equation(c, perms_30_27[4], 26, 1);
+        eqns[eq_id++] = get_precomputed_equation(c, bit_permutations[0], 30, 0);
+        eqns[eq_id++] = get_precomputed_equation(c, bit_permutations[1], 29, 0);
+        eqns[eq_id++] = get_precomputed_equation(c, bit_permutations[2], 28, 0);
+        eqns[eq_id++] = get_precomputed_equation(c, bit_permutations[3], 27, 0);
 
-        // 5 aA pair equations for cols 30-26
-        for (int bit = 30, i = 0; bit >= 26; bit--, i++) {
+        // 6 aA pair equations for cols 30-25
+        for (int bit = 30, i = 0; bit >= 25; bit--, i++) {
             Equation col_eq;
             initEquation(&col_eq, 0, 0, 1); // note the 1 on the RHS here
-            for (int p = 0; p < 3; p++) {
-                if (p == perms_30_27[i]) continue;
-                Equation other_eq = get_precomputed_equation(c, p, bit, 0);
-                xorEquationBy(&col_eq, &other_eq);
-            }
+            xorEquationByPermutedBit(bit_permutations, i, c, bit, col_eq);
             eqns[eq_id++] = col_eq;
         }
 
-        // col 25 has two zeros to reduce max carry - 2 equations
-        eqns[eq_id++] = get_precomputed_equation(c, XORO_LOW, 25, 0);
-        eqns[eq_id++] = get_precomputed_equation(c, XORO_LOW_ROTL, 25, 0);
+        // the gG equation
+        Equation eq_gG;
+        initEquation(&eq_gG, 0, 0, 1);
+        xorEquationByPermutedBit(bit_permutations, 4, c, 26, eq_gG);
+        xorEquationByPermutedBit(bit_permutations, 5, c, 25, eq_gG);
+        eqns[eq_id++] = eq_gG;
 
         // 1 pqr equation for col 31
         Equation eq_p = get_precomputed_equation(c, XORO_LOW_ROTL, 31, 1); // also note the 1 on the RHS here
@@ -338,13 +349,10 @@ Solution* generate_starting_solution(int num_calls, std::uint64_t equation_seed)
         xorEquationBy(&eq_p, &eq_r);
         eqns[eq_id++] = eq_p;
     }
-    //timer_end("|-- generate equations");
 
-    //timer_start();
     Solution *out = static_cast<Solution *>(malloc(sizeof(Solution)));
     gaussianElimGF2(eqns, eq_count, out);
     free(eqns);
-    //timer_end("|-- solve equations");
 
     return out;
 }
@@ -577,7 +585,7 @@ void full_check(Xoroshiro state7, std::uint32_t& full_result_counter, int cutoff
 int main(int argc, char **argv) {
     std::uint64_t start_eqn_seed = 0;
     std::uint32_t num_runs = 1;
-    int cutoff = 18;
+    int cutoff = 19;
     int num_gpus = 1;
 
     for (int i = 1; i < argc; i++) {
