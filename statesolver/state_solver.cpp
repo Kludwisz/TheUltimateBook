@@ -47,9 +47,15 @@ void initParamsFromFile(ParameterSet *obj, const char *filename)
     fptr = fopen(filename, "r");
     for (int i = 0; i < equations; i++)
     {
-        fscanf(fptr, "%d", &(obj->stateIDs[i]));
-        fscanf(fptr, "%d", &(obj->bitIDs[i]));
-        fscanf(fptr, "%d", &(obj->bitValues[i]));
+        if (
+            fscanf(fptr, "%d", &(obj->stateIDs[i])) != 1
+            || fscanf(fptr, "%d", &(obj->bitIDs[i])) != 1
+            || fscanf(fptr, "%d", &(obj->bitValues[i])) != 1
+        ) {
+            DEBUG("File input FAILED\n")
+            fclose(fptr);
+            return;
+        } 
     }
 
     DEBUG("File input success!\n")
@@ -222,7 +228,7 @@ int testSolverCorrectness(uint64_t seed)
     
     getAllXoroshiroStates(&sol, possibleStates, 16);
 
-    DEBUG("Got %llu possible solutions\n", maxParamValue)
+    DEBUG("Got %" PRIu64 " possible solutions\n", maxParamValue)
 
     bool found = false;
     for (int i = 0; i < maxParamValue; i++)
@@ -246,7 +252,7 @@ int batchTestSolverCorrectness(int testCount)
     {
         if (testSolverCorrectness(startSeed + i) != 0)
         {
-            DEBUG("Failed for seed %llu\n", startSeed + i)
+            DEBUG("Failed for seed %" PRIu64 "\n", startSeed + i)
             return 1;
         }
         DEBUG("Test %d OK!\n", i)
