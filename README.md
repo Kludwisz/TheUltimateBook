@@ -53,3 +53,24 @@ Got      (8ba2a3db099e8f65-1750ecc7f5c7fcec)
 `cpp/prover/` - verification and proof of in-game obtainability
 
 `cuda/` - GPU kernel for finding good candidate states
+
+
+## How to compile the CUDA kernel
+If you want to use the webhook functionality, make sure you have libcurl installed, then edit the webhook url in discord_webhook.h (remember to NEVER publish a live webhook, it can be used by anyone to send messages in your server!) and then compile with:
+
+`nvcc -arch=native -O3 -lcurl -DOLD_CUDA -DUSE_WEBHOOK bookfinder.cu *.cpp -o finder`
+
+If you don't want/need the discord webhook:
+
+`nvcc -arch=native -O3 -DOLD_CUDA bookfinder.cu *.cpp -o finder`
+
+If your GPU is new enough, you can omit `-DOLD_CUDA`. You can check if it is by trying to compile without that flag first - if it fails, keep it in the compile command.
+
+## How to run the CUDA kernel
+Assuming you compiled with one of the commands above:
+
+`./finder --gpus (number of gpus) --genthreads (number of solution gen threads PER GPU) --runs (number of runs) --cutoff (minimum # of enchantments on a book) --credit (your nickname for the webhook message)`
+
+For example:
+
+`./finder --gpus 1 --genthreads 8 --runs 100000000 --cutoff 20 --credit scriptline`
