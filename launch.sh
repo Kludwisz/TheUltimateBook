@@ -1,5 +1,0 @@
-GPUS=$(nvidia-smi -L | wc -l)
-for i in $GPUS; do 
-    echo "$i"
-    ./a.out --runs $1 --cutoff $2 --device $((i)) --credit $3 &
-done
