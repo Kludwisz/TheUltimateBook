@@ -1,4 +1,6 @@
-#pragma once
+#ifndef GAUSSIAN_ELIM_H
+#define GAUSSIAN_ELIM_H
+
 #include "inttypes.h"
 #include "stdbool.h"
 
@@ -30,3 +32,5 @@ void printEquation(Equation *eq);
 void printEquation(const Equation *eqn, int eq_index);
 
 int gaussianElimGF2(Equation equations[], int equationCount, Solution* sol);
+
+#endif

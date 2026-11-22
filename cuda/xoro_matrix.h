@@ -1,4 +1,6 @@
-#pragma once
+#ifndef XORO_MATRIX_H
+#define XORO_MATRIX_H
+
 #include "xoroshiro.h"
 #include "inttypes.h"
 
@@ -297,3 +299,5 @@ static const FXTMatrix XOROSHIRO_STANDARD_FXTM = {{
         }
     }
 }};
+
+#endif

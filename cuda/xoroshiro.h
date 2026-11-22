@@ -1,4 +1,6 @@
-#pragma once
+#ifndef XOROSHIRO_H
+#define XOROSHIRO_H
+
 #include "inttypes.h"
 #include <functional>
 
@@ -122,3 +124,5 @@ __host__ __device__ static inline int xNextIntJ(Xoroshiro *xr, uint32_t n)
     while (bits - val + m < 0);
     return val;
 }
+
+#endif

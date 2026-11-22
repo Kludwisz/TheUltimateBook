@@ -1,6 +1,6 @@
 #pragma once
 #include "gaussian_elim.h"
-#include "../xoroshiro.h"
+#include "xoroshiro.h"
 
 typedef struct ParameterSet ParameterSet;
 struct ParameterSet {

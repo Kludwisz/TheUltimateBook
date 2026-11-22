@@ -1,4 +1,6 @@
-#pragma once
+#ifndef UTILS_H
+#define UTILS_H
+
 #include "inttypes.h"
 #include "stdbool.h"
 #include "stdlib.h"
@@ -14,3 +16,5 @@
         printf(__VA_ARGS__); \
     } \
 }
+
+#endif

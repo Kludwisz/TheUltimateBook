@@ -1,5 +1,8 @@
 #include "gaussian_elim.h"
-#include "../utils.h"
+#include "utils.h"
+#include <stdio.h>
+#include <stdlib.h>
+
 static const bool DEBUG_MODE = false;
 
 void printEquation(const Equation *eqn, int eq_index) {
