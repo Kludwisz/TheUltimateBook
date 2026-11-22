@@ -52,6 +52,25 @@ __host__ __device__ static inline void xSetSeed(Xoroshiro *xr, uint64_t value)
     xr->hi = h;
 }
 
+__host__ __device__ static inline uint64_t mixStafford13(uint64_t z)
+{
+    z = (z ^ (z >> 30)) * static_cast<uint64_t>(-4658895280553007687LL);
+    z = (z ^ (z >> 27)) * static_cast<uint64_t>(-7723592293110705685LL);
+    return z ^ (z >> 31);
+} 
+
+__host__ __device__ static inline void xSetFishingSeed(Xoroshiro *xr, uint64_t worldseed)
+{
+    const uint64_t gameplayFishingLo = static_cast<uint64_t>(-6173436745131091895LL); 
+    const uint64_t gameplayFishingHi = static_cast<uint64_t>(-9034124644828526158LL);
+
+    uint64_t lowBits = worldseed ^ 7640891576956012809LL;
+    uint64_t highBits = lowBits + -7046029254386353131LL;
+
+    xr->lo = mixStafford13(lowBits ^ gameplayFishingLo);
+    xr->hi = mixStafford13(highBits ^ gameplayFishingHi);
+}
+
 __host__ __device__ static inline uint64_t xNextLong(Xoroshiro *xr)
 {
     uint64_t l = xr->lo;

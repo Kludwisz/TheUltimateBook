@@ -3,6 +3,7 @@
 
 #include "../xoroshiro.h"
 
-int get_state_advancement(Xoroshiro state, int lots_level);
+Xoroshiro get_next_state(Xoroshiro scx, int lots_level);
+Xoroshiro back_to_book_roll(Xoroshiro enchant_with_levels_state);
 
 #endif
