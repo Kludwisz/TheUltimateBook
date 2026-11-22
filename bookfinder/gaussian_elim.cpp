@@ -124,7 +124,7 @@ int gaussianElimGF2(Equation equations[], int equationCount, Solution* sol)
 
     DEBUG("Sorted!\n");
     for (int i = 0; i < equationCount; i++) {
-        DEBUG("Equation %d:  %016llx %016llx = %d\n", i+1, equations[i].lhs[0], equations[i].lhs[1], equations[i].rhs);
+        DEBUG("Equation %d:  %016" PRIx64 " %016" PRIx64 " = %d\n", i+1, equations[i].lhs[0], equations[i].lhs[1], equations[i].rhs);
     }
     for (int i = 0; i < 128; i++) {
         if (sol->isParameter[i]) {

@@ -1,6 +1,6 @@
 #include "xoro_matrix.h"
 #include "utils.h"
-//#include <intrin.h>
+#include <inttypes.h>
 
 static const bool DEBUG_MODE = false;
 
@@ -177,7 +177,7 @@ void fastXoroMatrixPower128(const FXTMatrix* matrix, uint64_t powerUpper64, uint
         bool transpositionDone = false;
         if (power & 1ULL)
         {
-            DEBUG("if power & 1:  power = %llu\n", power);
+            DEBUG("if power & 1:  power = %" PRIu64 "\n", power);
             if (isResultZero)
             {
                 copyFXTM(currentPower, nextResult);
@@ -200,7 +200,7 @@ void fastXoroMatrixPower128(const FXTMatrix* matrix, uint64_t powerUpper64, uint
         }
 
         // create the transposition of currentPower
-        DEBUG("calc next:  power = %llu\n", power)
+        DEBUG("calc next:  power = %" PRIu64 "\n", power)
         if (!transpositionDone)
             transposeFXTM(currentPower, &transposed);
 
