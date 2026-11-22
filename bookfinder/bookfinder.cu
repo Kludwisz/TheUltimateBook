@@ -54,8 +54,8 @@ conditions in the enchantWithLevels pipeline.
 #include <unordered_set>
 
 #include "cuda_utils.cuh"
-#include "xoro_matrix.h"
-#include "state_solver.h"
+#include "../xoro_matrix.h"
+#include "../statesolver/state_solver.h"
 
 #ifdef USE_WEBHOOK
 #include "discord_webhook.h"
