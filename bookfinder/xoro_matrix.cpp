@@ -42,7 +42,7 @@ void transposeFXTM(const FXTMatrix* matrix, FXTMatrix* transposed)
 #ifdef __GNUC__
 #include <x86intrin.h>
 int getParity(uint64_t val) {
-    return _popcnt64(val) & 1;
+    return __builtin_parityll(val); // aka: GCC, do your thing!
 }
 #else
 #include <intrin.h>
@@ -51,7 +51,7 @@ int getParity(uint64_t val) {
 }
 #endif
 
-// bT is the FXTM "transposition" of a
+// bT is the FXTM "transposition" of b
 void multiplyFXTM(const FXTMatrix* a, const FXTMatrix* bT, FXTMatrix* c)
 {
     // calculate each bit in the result matrix separately
@@ -77,71 +77,15 @@ void multiplyFXTM(const FXTMatrix* a, const FXTMatrix* bT, FXTMatrix* c)
     }
 }
 
-// void xoroMatrixPowerHelper(
-//     uint64_t partialPower, bool shouldFillPowers, bool* isResultZero, 
-//     FXTMatrix **currentPower, FXTMatrix **nextPower, FXTMatrix **currentResult, FXTMatrix **nextResult
-// )
-// {
-//     FXTMatrix transposed = { 0 };
-//     FXTMatrix *temp;
-
-//     int i = 1;
-//     while (partialPower != 0ULL || (shouldFillPowers && i <= 64))
-//     {
-//         bool transpositionDone = false;
-
-//         if (partialPower & 1ULL)
-//         {
-//             DEBUG("if power & 1:  power = %llu\n", partialPower);
-//             if (*isResultZero)
-//             {
-//                 copyFXTM(*currentPower, *nextResult);
-//                 DEBUG("copied successfully\n");
-//                 *isResultZero = false;
-//             }
-//             else
-//             {
-//                 transposeFXTM(*currentPower, &transposed);
-//                 transpositionDone = true;
-//                 DEBUG("else: transposed successfully\n");
-//                 multiplyFXTM(*currentResult, &transposed, *nextResult);
-//                 DEBUG("else: performed fast mul successfully\n");
-//             }
-                
-//             // swap next and current result, clearing space for the next operations
-//             temp = *currentResult;
-//             *currentResult = *nextResult;
-//             *nextResult = temp;
-//         }
-
-//         // only calculate next power when needed
-//         partialPower >>= 1;
-//         if (partialPower != 0ULL || shouldFillPowers)
-//         {
-//             // create the transposition of currentPower
-//             DEBUG("calc next:  power = %llu\n", partialPower)
-//             if (!transpositionDone)
-//                 transposeFXTM(*currentPower, &transposed);
-
-//             // perform a very fast, quasi-quadratic matrix multiplication
-//             multiplyFXTM(*currentPower, &transposed, *nextPower);
-
-//             // swap next and current power, making space for the next operations
-//             temp = *currentPower;
-//             *currentPower = *nextPower;
-//             *nextPower = temp;
-//         }
-
-//         printf("%d\n", i);
-//         i++;
-//     }
-// }
+void makeIdentityFXTM(FXTMatrix* fxtm) {
+    // not exactly what you call "fast" but i was too lazy to hardcode an identity matrix lol
+    fastXoroMatrixPower128(&XOROSHIRO_STANDARD_FXTM, FULL_64, FULL_64, fxtm);
+}
 
 void fastXoroMatrixPower(const FXTMatrix *matrix, uint64_t power, FXTMatrix *result)
 {
     if (power == 0) {
-        // not exactly what you call "fast" but i was too lazy to hardcode an identity matrix lol
-        fastXoroMatrixPower128(matrix, FULL_64, FULL_64, result);
+        makeIdentityFXTM(result);
     }
     else {
         fastXoroMatrixPower128(matrix, 0ULL, power, result);
@@ -254,3 +198,89 @@ void advanceXoroshiroFXTM(Xoroshiro *state, const FXTMatrix* fxtm)
     state->lo = newState[0];
     state->hi = newState[1];
 }
+
+void fastAdvanceXoroshiroFXTM(Xoroshiro *state, const FXTMatrix* fxtmT)
+{
+    uint64_t oldState[2] = { state->lo, state->hi };
+    uint64_t newState[2] = { 0ULL, 0ULL };
+
+    for (int qi = 0; qi < 2; qi++) {
+        for (int i = 0; i < 64; i++) {
+            const uint64_t mulXor = (oldState[0] & fxtmT->M[0][qi][63-i]) ^ (oldState[1] & fxtmT->M[1][qi][63-i]);
+            newState[qi] |= static_cast<uint64_t>(getParity(mulXor)) << i;
+        }
+    }
+
+    state->lo = newState[0];
+    state->hi = newState[1];
+}
+
+static void xorRows(FXTMatrix *left, FXTMatrix *right, int src_q, int src_i, int dst_q, int dst_i)
+{
+    for (int qj = 0; qj < 2; qj++) {
+        left->M[dst_q][qj][dst_i] ^= left->M[src_q][qj][src_i];
+        right->M[dst_q][qj][dst_i] ^= right->M[src_q][qj][src_i];
+    }
+}
+
+void invertFXTM(const FXTMatrix *fxtm, FXTMatrix *inverted)
+{
+    FXTMatrix left, right;
+    copyFXTM(fxtm, &left);
+    makeIdentityFXTM(&right);
+
+    for (int diag = 0; diag < 128; diag++) {
+        int p_q = diag / 64;
+        int p_i = diag % 64;
+        int p_bit = 63 - p_i;
+
+        int val = (left.M[p_q][p_q][p_i] >> p_bit) & 1;
+        if (val == 0) {
+            // Find another row below the row currently being fixed that has a 1 in the target col
+            for (int r = diag + 1; r < 128; r++) {
+                int r_q = r / 64;
+                int r_i = r % 64;
+                int r_val = (left.M[r_q][p_q][r_i] >> p_bit) & 1;
+                if (r_val == 1) {
+                    xorRows(&left, &right, r_q, r_i, p_q, p_i);
+                    break;
+                }
+            }
+        }
+
+        for (int row = 0; row < 128; row++) {
+            if (row == diag) continue;
+            int r_q = row / 64;
+            int r_i = row % 64;
+            int r_val = (left.M[r_q][p_q][r_i] >> p_bit) & 1;
+            if (r_val == 1) {
+                xorRows(&left, &right, p_q, p_i, r_q, r_i);
+            }
+        }
+    }
+
+    copyFXTM(&right, inverted);
+}
+
+/*
+static void printXoro(const Xoroshiro* state)
+{
+    printf("Current Xoroshiro state:   %016llx-%016llx\n", state->lo, state->hi);
+}
+
+int main() {
+    Xoroshiro a, b;
+    a.lo = b.lo = 0;
+    a.hi = b.hi = 1;
+
+    FXTMatrix xInv, xInvInv;
+    invertFXTM(&XOROSHIRO_STANDARD_FXTM, &xInv);
+    invertFXTM(&xInv, &xInvInv);
+
+    advanceXoroshiroFXTM(&a, &XOROSHIRO_STANDARD_FXTM);
+    advanceXoroshiroFXTM(&b, &xInvInv);
+
+    printXoro(&a);
+    printXoro(&b);
+}
+*/

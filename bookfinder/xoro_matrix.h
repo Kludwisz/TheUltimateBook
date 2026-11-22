@@ -15,11 +15,15 @@ struct FXTMatrix {
 
 // ------------------------------------------------------------------------------------
 
+void copyFXTM(const FXTMatrix* from, FXTMatrix* to);
 void transposeFXTM(const FXTMatrix *matrix, FXTMatrix *transposed);
 void multiplyFXTM(const FXTMatrix *a, const FXTMatrix *bT, FXTMatrix *c);
 void fastXoroMatrixPower(const FXTMatrix *matrix, uint64_t power, FXTMatrix *result);
 void fastXoroMatrixPower128(const FXTMatrix *matrix, uint64_t powerUpper64, uint64_t powerLower64, FXTMatrix *result);
 void advanceXoroshiroFXTM(Xoroshiro *state, const FXTMatrix *fxtm);
+void fastAdvanceXoroshiroFXTM(Xoroshiro *state, const FXTMatrix* fxtmT);
+void makeIdentityFXTM(FXTMatrix* fxtm);
+void invertFXTM(const FXTMatrix *fxtm, FXTMatrix *inverted);
 
 // -------------------------------------------------------------------------------------
 

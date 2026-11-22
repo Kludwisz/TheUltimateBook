@@ -2,6 +2,7 @@
 #define DISCORD_WEBHOOK_H
 
 #include <curl/curl.h>
+#include <cstdint>
 #include <string>
 
 inline void send_result(int num_enchants, uint64_t lo, uint64_t hi, std::string credit, int gpu_id) {
