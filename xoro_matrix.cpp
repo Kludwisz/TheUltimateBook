@@ -248,7 +248,7 @@ void invertFXTM(const FXTMatrix *fxtm, FXTMatrix *inverted)
 
 void printXoro(const Xoroshiro* state)
 {
-    printf("Current Xoroshiro state:   %016llx-%016llx\n", state->lo, state->hi);
+    printf("Current Xoroshiro state:   %016" PRIx64 "-%016" PRIx64 "\n", state->lo, state->hi);
 }
 
 /*
