@@ -72,11 +72,11 @@ static void send_result(int num_enchants, uint64_t lo, uint64_t hi, std::string 
 // Algorithm parameters - you can edit and experiment with these freely,
 // but keep in mind that BIT_EQN_BITS has to match the equations you set up!
 
-constexpr uint32_t NUM_CHECKED_ZERO_STATES = 14; // how many states the kernel checks for nextInt(50)==0 
-constexpr uint32_t NUM_ALL_ZERO_STATES = 14;     // how many states we want with nextInt(50)==0
+constexpr uint32_t NUM_CHECKED_ZERO_STATES = 15; // how many states the kernel checks for nextInt(50)==0 
+constexpr uint32_t NUM_ALL_ZERO_STATES = 15;     // how many states we want with nextInt(50)==0
 constexpr uint32_t BIT_EQN_BITS = 9;             // 
 
-constexpr uint32_t NUM_REVERSED_STATES = 12;
+constexpr uint32_t NUM_REVERSED_STATES = 11;
 constexpr uint32_t ITER_MASK_BITS = 6;
 constexpr uint32_t THREAD_MASK_BITS = 4;
 constexpr uint32_t THREAD_MASK_GROUPS = 2;
@@ -91,7 +91,6 @@ constexpr uint32_t TOTAL_PARAM_BITS = ITER_MASK_BITS
 constexpr uint32_t EXPECTED_PARAM_BITS = 128 - BIT_EQN_BITS * NUM_REVERSED_STATES;
 
 // safeguards
-static_assert(TOTAL_PARAM_BITS == EXPECTED_PARAM_BITS, "Invalid total parameter bits, review the input data.");
 static_assert(THREADS_PER_BLOCK == (1U << (THREAD_MASK_BITS * THREAD_MASK_GROUPS)), "The thread mask size must match THREADS_PER_BLOCK.");
 
 // --------------------------------------------------------------------------------
@@ -136,6 +135,56 @@ __device__ __forceinline__ bool process(Xoroshiro state, uint64_t lo, uint64_t h
     }
 
     return true;
+}
+
+constexpr uint32_t NUM_OTHER_STATES = NUM_ALL_ZERO_STATES - NUM_REVERSED_STATES;
+constexpr uint32_t PATTERN_FORMS = 26, PIECE_BITS = EXPECTED_PARAM_BITS - PATTERN_FORMS, NUM_PATTERNS = 162;
+struct Job { uint64_t K[4]; uint64_t E[PATTERN_FORMS][4]; uint64_t N[PIECE_BITS][4]; };
+struct JobBatch { Job jobs[RUNS_PER_BATCH]; };
+
+__device__ __forceinline__ void addPattern(const uint64_t (*E)[4], int q, uint64_t *s) {
+    bool two = q >= 81;
+    int d = two ? q - 81 : q;
+    for (int c = 0; c < 4; c++, d /= 3)
+        for (int part = 0; part < 3; part++)
+            if (two ? part != d % 3 : part == d % 3) for (int k = 0; k < 4; k++) s[k] ^= E[c * 3 + part][k];
+    if (!two) for (int k = 0; k < 4; k++) s[k] ^= E[12][k];
+}
+
+__device__ __forceinline__ int checkPiece(const uint64_t *a, const uint64_t (*N)[4], Xoroshiro *out) {
+    int found = 0, g = 0;
+    Xoroshiro plain = {a[2], a[3]};
+    for (int step = 0; step < 8; step++) {
+        if (step) { int f = step & 1 ? 0 : step & 2 ? 1 : 2; g ^= 1 << f; plain.lo ^= N[f][2]; plain.hi ^= N[f][3]; }
+        Xoroshiro t = plain;
+        if (xNextIntFast(&t, 50) != 0) continue;
+        Xoroshiro st = {a[0], a[1]};
+        for (int b = 0; b < (int)PIECE_BITS; b++) if ((g >> b) & 1) { st.lo ^= N[b][0]; st.hi ^= N[b][1]; }
+        if (process(st, 0, 0)) out[found++] = st;
+    }
+    return found;
+}
+
+__global__ void pieceKernel(JobBatch *__restrict__ d_batch, Xoroshiro *m_results, uint32_t *m_result_count) {
+    __shared__ uint64_t A1[4][NUM_PATTERNS], A2[4][NUM_PATTERNS];
+    const Job &j = d_batch->jobs[blockIdx.x];
+    for (int i = threadIdx.x; i < (int)NUM_PATTERNS; i += blockDim.x) {
+        uint64_t v[4] = {j.K[0], j.K[1], j.K[2], j.K[3]}, w[4] = {0, 0, 0, 0};
+        addPattern(j.E, i, v);
+        addPattern(j.E + 13, i, w);
+        for (int k = 0; k < 4; k++) { A1[k][i] = v[k]; A2[k][i] = w[k]; }
+    }
+    __syncthreads();
+    for (int p = threadIdx.x; p < (int)(NUM_PATTERNS * NUM_PATTERNS); p += blockDim.x) {
+        int p1 = p % NUM_PATTERNS, p2 = p / NUM_PATTERNS;
+        uint64_t a[4] = {A1[0][p1] ^ A2[0][p2], A1[1][p1] ^ A2[1][p2], A1[2][p1] ^ A2[2][p2], A1[3][p1] ^ A2[3][p2]};
+        Xoroshiro out[8];
+        int n = checkPiece(a, j.N, out);
+        for (int k = 0; k < n; k++) {
+            uint32_t idx = atomicAdd(m_result_count, 1);
+            if (idx < N_RESULTS_MAX) m_results[idx] = out[k];
+        }
+    }
 }
 
 // the kernel
@@ -268,7 +317,7 @@ void xorEquationByPermutedBit(int special_part, bool avoid, int c, int bit, Equa
 // Equation set + solution generator - uses the provided seed to determine the positioning
 // of the set bits in the addition columns, then solves using Gaussian elimination.
 
-void generate_state_seqn(int state_idxs[NUM_REVERSED_STATES], uint64_t eqn_seed) {
+void generate_state_seqn(int state_idxs[NUM_REVERSED_STATES], uint64_t eqn_seed, int *other_idxs = nullptr) {
     uint64_t seqn_seed = std::chrono::steady_clock::now().time_since_epoch().count() + eqn_seed;
     Xoroshiro seqn_rng;
     xSetSeed(&seqn_rng, seqn_seed);
@@ -284,27 +333,28 @@ void generate_state_seqn(int state_idxs[NUM_REVERSED_STATES], uint64_t eqn_seed)
         count++;
     }
 
-    int j = 0;
+    int j = 0, o = 0;
     for (int idx = 0; idx < NUM_ALL_ZERO_STATES; idx++) {
         if (state_taken[idx]) {
             state_idxs[j++] = idx;
-        }
+        } else if (other_idxs) other_idxs[o++] = idx;
     }
 }
 
-Solution* generate_starting_solution(int num_calls, uint64_t equation_seed) {
+Solution* generate_starting_solution(int num_calls, uint64_t equation_seed, int *other_idxs = nullptr) {
     int eq_count = num_calls * BIT_EQN_BITS;
     Equation* eqns = static_cast<Equation*>(malloc(eq_count * sizeof(Equation)));
     if (eqns == NULL) return NULL;
 
     int permutation[64] = {0};
-    for (int i = 0; equation_seed > 0; i++) {
-        permutation[i] = equation_seed % 3;
-        equation_seed /= 3;
+    Xoroshiro perm_rng;
+    xSetSeed(&perm_rng, equation_seed);
+    for (int i = 0; i < 64; i++) {
+        permutation[i] = xNextIntFast(&perm_rng, 3);
     }
 
     int state_idxs[NUM_REVERSED_STATES] = {0};
-    generate_state_seqn(state_idxs, equation_seed);
+    generate_state_seqn(state_idxs, equation_seed, other_idxs);
 
     int eq_id = 0;
     int pm_id = 0;
@@ -416,7 +466,7 @@ void fill_mask_group(uint64_t mask_group[], uint64_t per_param_masks[], int para
     }
 }
 
-void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
+void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms, uint64_t *params_out = nullptr) {
     uint64_t per_param_masks[128 * 2];
     
     // firstly, calculate masks for individual parameters
@@ -440,6 +490,8 @@ void generate_masks_for_solution(const Solution *sol, GroupMaskSet *gms) {
         per_param_masks[param_idx * 2 + 1] = mask_hi;
         bit_idx++;
     }
+
+    if (params_out) memcpy(params_out, per_param_masks, sizeof per_param_masks);
 
     // now we can combine the per-param masks and calculate "aggregated"
     // flip masks for the parameter combinations defined in GroupMaskSet.
@@ -497,10 +549,150 @@ bool setup_search(uint64_t eqn_seed, Batch *batch, size_t index) {
 }
 
 
+static int parity2(uint64_t a, uint64_t b) { return (__builtin_popcountll(a) + __builtin_popcountll(b)) & 1; }
+static void img(uint64_t lo, uint64_t hi, int steps, uint64_t *o) {
+    Xoroshiro x = {lo, hi};
+    for (int i = 0; i < steps; i++) (void)xNextLong(&x);
+    o[0] = lo; o[1] = hi; o[2] = x.lo; o[3] = x.hi;
+}
+
+static bool make_job(Xoroshiro x0, const uint64_t *pm, int c1, int c2, int cp, Job &job) {
+    Equation f[PATTERN_FORMS];
+    int k = 0;
+    for (int c : {c1, c2}) {
+        for (int col = 27; col <= 30; col++) for (int part = 0; part < 3; part++) f[k++] = get_precomputed_equation(c, part, col, 0);
+        f[k] = get_precomputed_equation(c, 0, 31, 0);
+        for (int part = 1; part < 3; part++) { Equation e = get_precomputed_equation(c, part, 31, 0); xorEquationBy(&f[k], &e); }
+        k++;
+    }
+    uint32_t m[PATTERN_FORMS], t[PATTERN_FORMS]; int cval[PATTERN_FORMS], piv[PATTERN_FORMS], rank = 0;
+    for (int i = 0; i < (int)PATTERN_FORMS; i++) {
+        cval[i] = parity2(f[i].lhs[0] & x0.lo, f[i].lhs[1] & x0.hi);
+        m[i] = 0; t[i] = 1u << i;
+        for (int b = 0; b < (int)EXPECTED_PARAM_BITS; b++) m[i] |= (uint32_t)parity2(f[i].lhs[0] & pm[2 * b], f[i].lhs[1] & pm[2 * b + 1]) << b;
+    }
+    for (int col = 0; col < (int)EXPECTED_PARAM_BITS && rank < (int)PATTERN_FORMS; col++) {
+        int r = rank;
+        while (r < (int)PATTERN_FORMS && !((m[r] >> col) & 1)) r++;
+        if (r == (int)PATTERN_FORMS) continue;
+        std::swap(m[r], m[rank]); std::swap(t[r], t[rank]);
+        for (int q = 0; q < (int)PATTERN_FORMS; q++) if (q != rank && ((m[q] >> col) & 1)) { m[q] ^= m[rank]; t[q] ^= t[rank]; }
+        piv[rank++] = col;
+    }
+    if (rank != (int)PATTERN_FORMS) return false;
+    for (int jf = 0; jf < (int)PATTERN_FORMS; jf++) {
+        uint64_t lo = 0, hi = 0;
+        for (int q = 0; q < rank; q++) if ((t[q] >> jf) & 1) { lo ^= pm[2 * piv[q]]; hi ^= pm[2 * piv[q] + 1]; }
+        img(lo, hi, cp, job.E[jf]);
+    }
+    img(x0.lo, x0.hi, cp, job.K);
+    for (int jf = 0; jf < (int)PATTERN_FORMS; jf++) if (cval[jf]) for (int i = 0; i < 4; i++) job.K[i] ^= job.E[jf][i];
+    int n = 0;
+    for (int b = 0; b < (int)EXPECTED_PARAM_BITS; b++) {
+        bool is_piv = false;
+        for (int q = 0; q < rank; q++) is_piv |= piv[q] == b;
+        if (is_piv) continue;
+        uint64_t lo = pm[2 * b], hi = pm[2 * b + 1];
+        for (int q = 0; q < rank; q++) if ((m[q] >> b) & 1) { lo ^= pm[2 * piv[q]]; hi ^= pm[2 * piv[q] + 1]; }
+        img(lo, hi, cp, job.N[n++]);
+    }
+    return n == (int)PIECE_BITS;
+}
+
+struct Rref {
+    uint64_t lo[128], hi[128], rr[128];
+    int piv[128], rank = 0;
+    bool bad = false;
+    void add(const Equation &e) {
+        uint64_t a = e.lhs[0], b = e.lhs[1], r = e.rhs;
+        if (bad) return;
+        for (int q = 0; q < rank; q++) {
+            uint64_t hit = 0 - ((((piv[q] >> 6) ? b : a) >> (piv[q] & 63)) & 1);
+            a ^= lo[q] & hit; b ^= hi[q] & hit; r ^= rr[q] & hit;
+        }
+        if (!a && !b) { bad |= r & 1; return; }
+        int c = a ? __builtin_ctzll(a) : 64 + __builtin_ctzll(b);
+        for (int q = 0; q < rank; q++) {
+            uint64_t hit = 0 - ((((c >> 6) ? hi[q] : lo[q]) >> (c & 63)) & 1);
+            lo[q] ^= a & hit; hi[q] ^= b & hit; rr[q] ^= r & hit;
+        }
+        lo[rank] = a; hi[rank] = b; rr[rank] = r; piv[rank++] = c;
+    }
+    int solve(Xoroshiro &x0, uint64_t *pm) const {
+        uint64_t pmask[2] = {0, 0};
+        x0 = {0, 0};
+        for (int q = 0; q < rank; q++) {
+            pmask[piv[q] >> 6] |= 1ULL << (piv[q] & 63);
+            (piv[q] < 64 ? x0.lo : x0.hi) |= (rr[q] & 1) << (piv[q] & 63);
+        }
+        int slot[128], n = 0;
+        for (int f = 0; f < 128; f++) {
+            if ((pmask[f >> 6] >> (f & 63)) & 1) continue;
+            slot[f] = n;
+            pm[2 * n] = f < 64 ? 1ULL << f : 0;
+            pm[2 * n + 1] = f >= 64 ? 1ULL << (f - 64) : 0;
+            n++;
+        }
+        for (int q = 0; q < rank; q++) {
+            uint64_t bl = piv[q] < 64 ? 1ULL << piv[q] : 0, bh = piv[q] >= 64 ? 1ULL << (piv[q] - 64) : 0;
+            for (uint64_t m = lo[q] & ~pmask[0]; m; m &= m - 1) { int k = slot[__builtin_ctzll(m)]; pm[2 * k] ^= bl; pm[2 * k + 1] ^= bh; }
+            for (uint64_t m = hi[q] & ~pmask[1]; m; m &= m - 1) { int k = slot[64 + __builtin_ctzll(m)]; pm[2 * k] ^= bl; pm[2 * k + 1] ^= bh; }
+        }
+        return n;
+    }
+};
+
+static void add_roll(Rref &e, int c, const int *perm) {
+    for (int i = 0; i < 4; i++) {
+        Equation col_eq;
+        initEquation(&col_eq, 0, 0, 1);
+        xorEquationByPermutedBit(perm[i], true, c, 30 - i, col_eq);
+        e.add(get_precomputed_equation(c, perm[i], 30 - i, 0));
+        e.add(col_eq);
+    }
+    Equation eq_p = get_precomputed_equation(c, XORO_LOW_ROTL, 31, 1);
+    Equation eq_q = get_precomputed_equation(c, XORO_HIGH_ROTL, 31, 0);
+    Equation eq_r = get_precomputed_equation(c, XORO_LOW, 31, 0);
+    xorEquationBy(&eq_p, &eq_q);
+    xorEquationBy(&eq_p, &eq_r);
+    e.add(eq_p);
+}
+
+static int setup_jobs(uint64_t eqn_seed, JobBatch *batch, int index, int room) {
+    Xoroshiro rng;
+    xSetSeed(&rng, eqn_seed);
+    int idx[NUM_ALL_ZERO_STATES], perm[4], made = 0;
+    for (int i = 0; i < (int)NUM_ALL_ZERO_STATES; i++) idx[i] = i;
+    for (int i = NUM_ALL_ZERO_STATES - 1; i > 0; i--) std::swap(idx[i], idx[xNextIntFast(&rng, i + 1)]);
+    static thread_local Rref ten, full;
+    ten = Rref();
+    for (int i = 0; i < (int)NUM_REVERSED_STATES - 1; i++) {
+        for (int k = 0; k < 4; k++) perm[k] = xNextIntFast(&rng, 3);
+        add_roll(ten, 2 * idx[i], perm);
+    }
+    if (ten.bad) return 0;
+    int base_perm[4];
+    for (int k = 0; k < 4; k++) base_perm[k] = xNextIntFast(&rng, 3);
+    const int *others = idx + NUM_REVERSED_STATES;
+    for (int shift = 0; shift < 3; shift++) {
+        for (int k = 0; k < 4; k++) perm[k] = (base_perm[k] + shift) % 3;
+        full = ten;
+        add_roll(full, 2 * idx[NUM_REVERSED_STATES - 1], perm);
+        Xoroshiro x0;
+        uint64_t pm[128 * 2];
+        if (full.bad || full.solve(x0, pm) != (int)EXPECTED_PARAM_BITS) continue;
+        for (int x = 0; x < 4; x++) for (int y = x + 1; y < 4; y++) {
+            int plain = others[(x != 0 && y != 0) ? 0 : (x != 1 && y != 1) ? 1 : 2];
+            if (made < room && make_job(x0, pm, 2 * others[x], 2 * others[y], 2 * plain, batch->jobs[index + made])) made++;
+        }
+    }
+    return made;
+}
+
 auto global_start = std::chrono::steady_clock::now();
 int gen_threads = 1;
 
-void generate_batch(Batch *h_batch, uint64_t *eqn_seed) {
+void generate_batch(JobBatch *h_batch, uint64_t *eqn_seed) {
     uint64_t seeds[RUNS_PER_BATCH];
     seeds[0] = *eqn_seed;
 
@@ -515,8 +707,8 @@ void generate_batch(Batch *h_batch, uint64_t *eqn_seed) {
     for (int th = 0; th < gen_threads; th++) {
         threads.emplace_back([th, per_thread_total, seeds, h_batch]() {
             //std::fprintf(stderr, "thread %d %d   %d to %d\n", th, per_thread_total, th*per_thread_total, (th+1)*per_thread_total);
-            for (int offset = th*per_thread_total; offset < (th+1)*per_thread_total; offset++) {
-                (void)setup_search(seeds[offset], h_batch, offset);
+            for (int offset = th*per_thread_total, tries = 0; offset < (th+1)*per_thread_total; tries++) {
+                offset += setup_jobs(seeds[offset] + tries, h_batch, offset, (th+1)*per_thread_total - offset);
             }
             //std::fprintf(stderr, "(+) Setup done\n");
         });
@@ -534,18 +726,24 @@ void generate_batch(Batch *h_batch, uint64_t *eqn_seed) {
 std::mutex send_result_mutex;
 std::unordered_set<Xoroshiro, XoroshiroHash> sols;
 
+static bool catches_book(Xoroshiro state) {
+    int r = xNextInt(&state, 97);
+    return r >= 4 && r < 15 && xNextInt(&state, 6) == 4;
+}
+
 void full_check(Xoroshiro state7, uint32_t& full_result_counter, int cutoff, std::string credit, int gpu) {
     // back 12 for the nextInt states, then back another (?) to undo the enchant_with_levels stuff
     Xoroshiro base_state = state7;
 
     // FULL_64, FULL_64 is 0
     FXTMatrix back = {0};
-    fastXoroMatrixPower128(&XOROSHIRO_STANDARD_FXTM, FULL_64, FULL_64 - 50, &back);
+    fastXoroMatrixPower128(&XOROSHIRO_STANDARD_FXTM, FULL_64, FULL_64 - 52, &back);
     advanceXoroshiroFXTM(&base_state, &back);
 
     int max_enchants = 0;
     for (int i = 0; i < 100; i++) {
         Xoroshiro state = base_state;
+        (void)xNextLong(&state); (void)xNextLong(&state);
         
         const uint32_t enchantability = 1;
         const uint32_t delta = enchantability / 4 + 1;
@@ -567,7 +765,7 @@ void full_check(Xoroshiro state7, uint32_t& full_result_counter, int cutoff, std
             max_enchants = num_enchants;
         }
 
-        if (num_enchants >= cutoff) {
+        if (num_enchants >= cutoff && catches_book(base_state)) {
             { std::lock_guard<std::mutex> lock(send_result_mutex);
                 // deduplicate
                 if (sols.find(base_state) == sols.end()) {
@@ -650,24 +848,23 @@ int main(int argc, char **argv) {
             CUDA_CHECK(cudaMallocManaged(&m_results, sizeof(Xoroshiro) * N_RESULTS_MAX));
             CUDA_CHECK(cudaMallocManaged(&m_result_count, sizeof(uint32_t)));
 
-            Batch *d_batch;
-            CUDA_CHECK(cudaMalloc(&d_batch, sizeof(Batch)));
-            Batch *h_batch;
-            CUDA_CHECK(cudaHostAlloc(&h_batch, sizeof(Batch), 0));
+            JobBatch *d_batch;
+            CUDA_CHECK(cudaMalloc(&d_batch, sizeof(JobBatch)));
+            JobBatch *h_batch;
+            CUDA_CHECK(cudaHostAlloc(&h_batch, sizeof(JobBatch), 0));
 
             uint64_t eqn_seed = start_eqn_seed;
             uint32_t results_partial = 0, results_full = 0;
 
             generate_batch(h_batch, &eqn_seed);
-            CUDA_CHECK(cudaMemcpy(d_batch, h_batch, sizeof(Batch), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_batch, h_batch, sizeof(JobBatch), cudaMemcpyHostToDevice));
         
-            constexpr uint32_t N_BLOCKS = (1U << (TOTAL_PARAM_BITS - ITER_MASK_BITS)) / THREADS_PER_BLOCK;
-            dim3 grid(N_BLOCKS, RUNS_PER_BATCH);
+            dim3 grid(RUNS_PER_BATCH);
 
             for (int r = 0; r < num_runs - RUNS_PER_BATCH; r += RUNS_PER_BATCH) {
                 *m_result_count = 0;
 
-                gaussianElimIterKernel<<<grid, THREADS_PER_BLOCK >>>(d_batch, m_results, m_result_count);
+                pieceKernel<<<grid, THREADS_PER_BLOCK >>>(d_batch, m_results, m_result_count);
                 generate_batch(h_batch, &eqn_seed);
                 
                 auto t0 = std::chrono::steady_clock::now();
@@ -675,7 +872,7 @@ int main(int argc, char **argv) {
                 auto t1 = std::chrono::steady_clock::now();
                 auto int_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-                CUDA_CHECK(cudaMemcpy(d_batch, h_batch, sizeof(Batch), cudaMemcpyHostToDevice));
+                CUDA_CHECK(cudaMemcpy(d_batch, h_batch, sizeof(JobBatch), cudaMemcpyHostToDevice));
 
                 for (uint32_t i = 0; i < *m_result_count; i++) {
                     results_partial++;
@@ -687,7 +884,7 @@ int main(int argc, char **argv) {
             }
 
             *m_result_count = 0;
-            gaussianElimIterKernel<<<grid, THREADS_PER_BLOCK >>>(d_batch, m_results, m_result_count);
+            pieceKernel<<<grid, THREADS_PER_BLOCK >>>(d_batch, m_results, m_result_count);
             CUDA_CHECK(cudaDeviceSynchronize());
 
             for (uint32_t i = 0; i < *m_result_count; i++) {
