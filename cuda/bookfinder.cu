@@ -599,21 +599,93 @@ static bool make_job(Xoroshiro x0, const uint64_t *pm, int c1, int c2, int cp, J
     return n == (int)PIECE_BITS;
 }
 
+struct Rref {
+    uint64_t lo[128], hi[128], rr[128];
+    int piv[128], rank = 0;
+    bool bad = false;
+    void add(const Equation &e) {
+        uint64_t a = e.lhs[0], b = e.lhs[1], r = e.rhs;
+        if (bad) return;
+        for (int q = 0; q < rank; q++) {
+            uint64_t hit = 0 - ((((piv[q] >> 6) ? b : a) >> (piv[q] & 63)) & 1);
+            a ^= lo[q] & hit; b ^= hi[q] & hit; r ^= rr[q] & hit;
+        }
+        if (!a && !b) { bad |= r & 1; return; }
+        int c = a ? __builtin_ctzll(a) : 64 + __builtin_ctzll(b);
+        for (int q = 0; q < rank; q++) {
+            uint64_t hit = 0 - ((((c >> 6) ? hi[q] : lo[q]) >> (c & 63)) & 1);
+            lo[q] ^= a & hit; hi[q] ^= b & hit; rr[q] ^= r & hit;
+        }
+        lo[rank] = a; hi[rank] = b; rr[rank] = r; piv[rank++] = c;
+    }
+    int solve(Xoroshiro &x0, uint64_t *pm) const {
+        uint64_t pmask[2] = {0, 0};
+        x0 = {0, 0};
+        for (int q = 0; q < rank; q++) {
+            pmask[piv[q] >> 6] |= 1ULL << (piv[q] & 63);
+            (piv[q] < 64 ? x0.lo : x0.hi) |= (rr[q] & 1) << (piv[q] & 63);
+        }
+        int slot[128], n = 0;
+        for (int f = 0; f < 128; f++) {
+            if ((pmask[f >> 6] >> (f & 63)) & 1) continue;
+            slot[f] = n;
+            pm[2 * n] = f < 64 ? 1ULL << f : 0;
+            pm[2 * n + 1] = f >= 64 ? 1ULL << (f - 64) : 0;
+            n++;
+        }
+        for (int q = 0; q < rank; q++) {
+            uint64_t bl = piv[q] < 64 ? 1ULL << piv[q] : 0, bh = piv[q] >= 64 ? 1ULL << (piv[q] - 64) : 0;
+            for (uint64_t m = lo[q] & ~pmask[0]; m; m &= m - 1) { int k = slot[__builtin_ctzll(m)]; pm[2 * k] ^= bl; pm[2 * k + 1] ^= bh; }
+            for (uint64_t m = hi[q] & ~pmask[1]; m; m &= m - 1) { int k = slot[64 + __builtin_ctzll(m)]; pm[2 * k] ^= bl; pm[2 * k + 1] ^= bh; }
+        }
+        return n;
+    }
+};
+
+static void add_roll(Rref &e, int c, const int *perm) {
+    for (int i = 0; i < 4; i++) {
+        Equation col_eq;
+        initEquation(&col_eq, 0, 0, 1);
+        xorEquationByPermutedBit(perm[i], true, c, 30 - i, col_eq);
+        e.add(get_precomputed_equation(c, perm[i], 30 - i, 0));
+        e.add(col_eq);
+    }
+    Equation eq_p = get_precomputed_equation(c, XORO_LOW_ROTL, 31, 1);
+    Equation eq_q = get_precomputed_equation(c, XORO_HIGH_ROTL, 31, 0);
+    Equation eq_r = get_precomputed_equation(c, XORO_LOW, 31, 0);
+    xorEquationBy(&eq_p, &eq_q);
+    xorEquationBy(&eq_p, &eq_r);
+    e.add(eq_p);
+}
+
 static int setup_jobs(uint64_t eqn_seed, JobBatch *batch, int index, int room) {
-    int others[NUM_OTHER_STATES], made = 0;
-    Solution *sol = generate_starting_solution(NUM_REVERSED_STATES, eqn_seed, others);
-    if (sol->parameterCount == (int)EXPECTED_PARAM_BITS) {
+    Xoroshiro rng;
+    xSetSeed(&rng, eqn_seed);
+    int idx[NUM_ALL_ZERO_STATES], perm[4], made = 0;
+    for (int i = 0; i < (int)NUM_ALL_ZERO_STATES; i++) idx[i] = i;
+    for (int i = NUM_ALL_ZERO_STATES - 1; i > 0; i--) std::swap(idx[i], idx[xNextIntFast(&rng, i + 1)]);
+    static thread_local Rref ten, full;
+    ten = Rref();
+    for (int i = 0; i < (int)NUM_REVERSED_STATES - 1; i++) {
+        for (int k = 0; k < 4; k++) perm[k] = xNextIntFast(&rng, 3);
+        add_roll(ten, 2 * idx[i], perm);
+    }
+    if (ten.bad) return 0;
+    int base_perm[4];
+    for (int k = 0; k < 4; k++) base_perm[k] = xNextIntFast(&rng, 3);
+    const int *others = idx + NUM_REVERSED_STATES;
+    for (int shift = 0; shift < 3; shift++) {
+        for (int k = 0; k < 4; k++) perm[k] = (base_perm[k] + shift) % 3;
+        full = ten;
+        add_roll(full, 2 * idx[NUM_REVERSED_STATES - 1], perm);
         Xoroshiro x0;
-        getAllXoroshiroStates(sol, &x0, 1);
-        GroupMaskSet gms;
         uint64_t pm[128 * 2];
-        generate_masks_for_solution(sol, &gms, pm);
+        if (full.bad || full.solve(x0, pm) != (int)EXPECTED_PARAM_BITS) continue;
         for (int x = 0; x < 4; x++) for (int y = x + 1; y < 4; y++) {
             int plain = others[(x != 0 && y != 0) ? 0 : (x != 1 && y != 1) ? 1 : 2];
             if (made < room && make_job(x0, pm, 2 * others[x], 2 * others[y], 2 * plain, batch->jobs[index + made])) made++;
         }
     }
-    free(sol);
     return made;
 }
 
